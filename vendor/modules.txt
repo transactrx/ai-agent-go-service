@@ -33,7 +33,7 @@ github.com/aws/aws-sdk-go-v2/internal/timeconv
 ## explicit; go 1.24
 github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream
 github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream/eventstreamapi
-# github.com/aws/aws-sdk-go-v2/config v1.32.25
+# github.com/aws/aws-sdk-go-v2/config v1.32.17
 ## explicit; go 1.24
 github.com/aws/aws-sdk-go-v2/config
 github.com/aws/aws-sdk-go-v2/config/internal/ini
@@ -62,21 +62,21 @@ github.com/aws/aws-sdk-go-v2/internal/endpoints/v2
 github.com/aws/aws-sdk-go-v2/internal/v4a
 github.com/aws/aws-sdk-go-v2/internal/v4a/internal/crypto
 github.com/aws/aws-sdk-go-v2/internal/v4a/internal/v4
-# github.com/aws/aws-sdk-go-v2/service/bedrock v1.64.0
+# github.com/aws/aws-sdk-go-v2/service/bedrock v1.63.3
 ## explicit; go 1.24
 github.com/aws/aws-sdk-go-v2/service/bedrock
 github.com/aws/aws-sdk-go-v2/service/bedrock/document
 github.com/aws/aws-sdk-go-v2/service/bedrock/internal/document
 github.com/aws/aws-sdk-go-v2/service/bedrock/internal/endpoints
 github.com/aws/aws-sdk-go-v2/service/bedrock/types
-# github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.54.0
+# github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.6
 ## explicit; go 1.24
 github.com/aws/aws-sdk-go-v2/service/bedrockruntime
 github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document
 github.com/aws/aws-sdk-go-v2/service/bedrockruntime/internal/document
 github.com/aws/aws-sdk-go-v2/service/bedrockruntime/internal/endpoints
 github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types
-# github.com/aws/aws-sdk-go-v2/service/dynamodb v1.59.0
+# github.com/aws/aws-sdk-go-v2/service/dynamodb v1.57.3
 ## explicit; go 1.24
 github.com/aws/aws-sdk-go-v2/service/dynamodb
 github.com/aws/aws-sdk-go-v2/service/dynamodb/internal/customizations
@@ -99,7 +99,7 @@ github.com/aws/aws-sdk-go-v2/service/internal/presigned-url
 github.com/aws/aws-sdk-go-v2/service/internal/s3shared
 github.com/aws/aws-sdk-go-v2/service/internal/s3shared/arn
 github.com/aws/aws-sdk-go-v2/service/internal/s3shared/config
-# github.com/aws/aws-sdk-go-v2/service/s3 v1.104.0
+# github.com/aws/aws-sdk-go-v2/service/s3 v1.101.0
 ## explicit; go 1.24
 github.com/aws/aws-sdk-go-v2/service/s3
 github.com/aws/aws-sdk-go-v2/service/s3/internal/arn
@@ -181,7 +181,7 @@ github.com/jackc/pgpassfile
 # github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761
 ## explicit; go 1.14
 github.com/jackc/pgservicefile
-# github.com/jackc/pgx/v5 v5.10.0
+# github.com/jackc/pgx/v5 v5.9.2
 ## explicit; go 1.25.0
 github.com/jackc/pgx/v5
 github.com/jackc/pgx/v5/internal/iobufpool
@@ -213,7 +213,7 @@ github.com/minio/highwayhash
 # github.com/nats-io/jwt/v2 v2.8.2
 ## explicit; go 1.25.0
 github.com/nats-io/jwt/v2
-# github.com/nats-io/nats-server/v2 v2.14.2
+# github.com/nats-io/nats-server/v2 v2.14.0
 ## explicit; go 1.25.0
 github.com/nats-io/nats-server/v2/conf
 github.com/nats-io/nats-server/v2/internal/fastrand
@@ -232,7 +232,7 @@ github.com/nats-io/nats-server/v2/server/sysmem
 github.com/nats-io/nats-server/v2/server/thw
 github.com/nats-io/nats-server/v2/server/tpm
 github.com/nats-io/nats-server/v2/test
-# github.com/nats-io/nats.go v1.52.0
+# github.com/nats-io/nats.go v1.51.0
 ## explicit; go 1.25.0
 github.com/nats-io/nats.go
 github.com/nats-io/nats.go/encoders/builtin

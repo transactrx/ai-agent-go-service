@@ -66,7 +66,7 @@ type Account struct {
 	claimJWT     string
 	updated      time.Time
 	mu           sync.RWMutex
-	smu          sync.Mutex // serializes route interest updates
+	sqmu         sync.Mutex
 	sl           *Sublist
 	ic           *client
 	sq           *sendq
@@ -80,7 +80,7 @@ type Account struct {
 	nrleafs      int32
 	clients      map[*client]struct{}
 	rm           map[string]int32
-	lws          map[string]int32 // per key, last rm[key] sent to routes; used to dedup sends
+	lqws         map[string]int32
 	usersRevoked map[string]int64
 	mappings     []*mapping
 	hasMapped    atomic.Bool
