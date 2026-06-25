@@ -73,3 +73,26 @@ func TestFactoryErrorPropagates(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestRegistry_ReplaceOverwrites(t *testing.T) {
+	reg := node.NewRegistry()
+	a := node.FactoryFunc(func(json.RawMessage) (node.Node, error) { return nil, nil })
+	b := node.FactoryFunc(func(json.RawMessage) (node.Node, error) { return nil, nil })
+	if err := reg.Register("x", a); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	reg.Replace("x", b) // must not panic or require prior delete
+	got, ok := reg.Get("x")
+	if !ok {
+		t.Fatal("x missing after Replace")
+	}
+	// FactoryFunc values are funcs (not comparable by ==); assert non-nil and that a
+	// second Replace of a brand-new key also works.
+	if got == nil {
+		t.Fatal("Replace stored nil")
+	}
+	reg.Replace("y", b)
+	if _, ok := reg.Get("y"); !ok {
+		t.Error("Replace of new key y did not register")
+	}
+}

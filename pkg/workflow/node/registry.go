@@ -59,3 +59,12 @@ func (r *Registry) Types() []string {
 	}
 	return out
 }
+
+// Replace sets typeKey to f, overwriting any existing factory. Unlike Register it
+// never errors on a duplicate — used by the agent facade so consumer-supplied factories
+// can override library defaults.
+func (r *Registry) Replace(typeKey string, f Factory) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.factories[typeKey] = f
+}
