@@ -180,6 +180,7 @@ github.com/gofiber/contrib/websocket
 github.com/gofiber/fiber/v2
 github.com/gofiber/fiber/v2/internal/schema
 github.com/gofiber/fiber/v2/log
+github.com/gofiber/fiber/v2/middleware/filesystem
 github.com/gofiber/fiber/v2/utils
 # github.com/google/go-tpm v0.9.8
 ## explicit; go 1.22
