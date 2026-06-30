@@ -1,0 +1,167 @@
+/* aichat-webix.css — design tokens, window layout, welcome card, composer.
+   All other aichat-webix-*.css files reference the variables defined here. */
+
+.aichat-webix-root {
+    --aichat-webix-radius: 1rem;
+    --aichat-webix-radius-sm: 0.375rem;
+    --aichat-webix-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+    --aichat-webix-ring: 1px solid rgb(226, 232, 240);
+    --aichat-webix-bg: rgb(248, 250, 252);
+    --aichat-webix-fg: rgb(30, 41, 59);
+    --aichat-webix-muted: rgb(100, 116, 139);
+    --aichat-webix-user-bg: rgb(37, 99, 235);
+    --aichat-webix-user-fg: rgb(255, 255, 255);
+    --aichat-webix-assistant-bg: rgb(255, 255, 255);
+    --aichat-webix-assistant-fg: rgb(30, 41, 59);
+    --aichat-webix-error-bg: rgb(254, 242, 242);
+    --aichat-webix-error-fg: rgb(127, 29, 29);
+    --aichat-webix-amber: rgb(180, 83, 9);
+    --aichat-webix-amber-bg: rgb(255, 251, 235);
+    --aichat-webix-sky: rgb(2, 132, 199);
+    --aichat-webix-sky-bg: rgb(240, 249, 255);
+    --aichat-webix-violet: rgb(124, 58, 237);
+    --aichat-webix-violet-bg: rgb(245, 243, 255);
+    background: var(--aichat-webix-bg);
+    color: var(--aichat-webix-fg);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+/* Thread list — kill Webix list defaults that fight bubble rendering */
+.aichat-webix-thread .webix_list_item {
+    border-bottom: 0 !important;
+    padding: 0 !important;
+    background: transparent !important;
+}
+.aichat-webix-thread .webix_list_item.webix_selected {
+    background: transparent !important;
+    color: inherit !important;
+}
+/* A row whose template renders empty — a tool_call/tool_result step hidden by
+   the "Show tool steps" toggle — must not occupy any vertical space. */
+.aichat-webix-thread .webix_list_item:empty { display: none !important; }
+
+/* Welcome card */
+.aichat-webix-welcome {
+    margin: 3rem auto 0;
+    max-width: 36rem;
+    padding: 1.5rem;
+    background: #fff;
+    border: var(--aichat-webix-ring);
+    border-radius: var(--aichat-webix-radius);
+    box-shadow: var(--aichat-webix-shadow);
+    text-align: center;
+}
+.aichat-webix-welcome-title {
+    font-weight: 600;
+    color: var(--aichat-webix-fg);
+    margin-bottom: 0.5rem;
+}
+.aichat-webix-welcome-body {
+    font-size: 0.875rem;
+    color: var(--aichat-webix-muted);
+    line-height: 1.5;
+}
+
+/* Composer */
+.aichat-webix-composer {
+    border-top: var(--aichat-webix-ring);
+    background: #fff;
+}
+
+/* Paperclip attachment button — bordered, light, no aggressive fill.
+   Overrides Webix's default dark icon-button styling. The visible element
+   is the inner <button>; the outer .webix_view and middle .webix_el_box
+   are kept transparent so only the inner button shows a border. */
+.aichat-webix-attach-btn,
+.aichat-webix-attach-btn .webix_el_box {
+    background: transparent !important;
+    border: 0 !important;
+    box-shadow: none !important;
+}
+.aichat-webix-attach-btn button.webix_button.webix_img_btn {
+    background: #fff !important;
+    border: 1px solid rgb(203, 213, 225) !important;
+    border-radius: 0.5rem !important;
+    color: var(--aichat-webix-muted) !important;
+    box-shadow: none !important;
+    cursor: pointer;
+    width: 36px !important;
+    height: 36px !important;
+    line-height: 34px !important;
+    padding: 0 !important;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.aichat-webix-attach-btn button.webix_button.webix_img_btn .webix_icon_btn,
+.aichat-webix-attach-btn .webix_icon_btn {
+    color: var(--aichat-webix-muted) !important;
+    font-size: 1.15rem !important;
+    max-width: none !important;
+}
+.aichat-webix-attach-btn button.webix_button.webix_img_btn:hover {
+    background: rgb(248, 250, 252) !important;
+    border-color: rgb(100, 116, 139) !important;
+}
+.aichat-webix-attach-btn button.webix_button.webix_img_btn:hover .webix_icon_btn {
+    color: var(--aichat-webix-fg) !important;
+}
+
+.aichat-webix-composer .webix_el_textarea textarea {
+    border: var(--aichat-webix-ring);
+    border-radius: var(--aichat-webix-radius-sm);
+    padding: 0.5rem 0.75rem;
+    font-size: 0.875rem;
+    resize: none;
+}
+.aichat-webix-composer .webix_el_textarea textarea:focus {
+    border-color: rgb(59, 130, 246);
+    box-shadow: 0 0 0 1px rgb(59, 130, 246);
+    outline: none;
+}
+.aichat-webix-chipstrip {
+    padding: 0.25rem 0.5rem 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+}
+.aichat-webix-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.25rem 0.5rem;
+    background: rgb(241, 245, 249);
+    border-radius: var(--aichat-webix-radius-sm);
+    font-size: 0.75rem;
+    color: rgb(51, 65, 85);
+    max-width: 18rem;
+}
+.aichat-webix-chip .aichat-webix-chip-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 12rem;
+}
+.aichat-webix-chip .aichat-webix-chip-x,
+.aichat-webix-chip .aichat-webix-chip-retry {
+    cursor: pointer;
+    color: rgb(100, 116, 139);
+    padding: 0 0.25rem;
+    border-radius: 0.25rem;
+}
+.aichat-webix-chip .aichat-webix-chip-x:hover,
+.aichat-webix-chip .aichat-webix-chip-retry:hover {
+    background: rgb(226, 232, 240);
+    color: rgb(30, 41, 59);
+}
+.aichat-webix-chip.is-running {
+    background: rgb(254, 249, 195);
+    color: rgb(133, 77, 14);
+}
+.aichat-webix-chip.is-error {
+    background: rgb(254, 226, 226);
+    color: rgb(127, 29, 29);
+}
+
+/* Toolbar checkbox label tweak for the "Show tool steps" toggle */
+.aichat-show-tool-steps .webix_label_right { color: var(--aichat-webix-muted); }
