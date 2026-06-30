@@ -29,7 +29,7 @@ func (s *Service) Run(ctx context.Context) error {
 	cfg := config.Load()
 	logger := s.logger
 	if logger == nil {
-		logger = log.New(os.Stdout, fmt.Sprintf("[%s] ai-agent-service ", cfg.Region), log.LstdFlags|log.Lshortfile)
+		logger = log.New(os.Stdout, fmt.Sprintf("[%s] %s ", cfg.Region, s.appName), log.LstdFlags|log.Lshortfile)
 	}
 
 	logger.Print("boot: initializing nats-service")

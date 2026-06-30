@@ -13,9 +13,10 @@ import (
 // NewService and the With* options, then call Run.
 type Service struct {
 	workflowsDir   string
+	appName        string                  // log-prefix identifier; Run builds "[region] <appName> " when logger is nil
 	extraFactories map[string]node.Factory // type key -> factory; applied AFTER defaults (override-capable)
 	extraHosts     map[string]any          // merged into the engine hosts map
-	logger         *log.Logger             // nil => Run builds the default region-prefixed logger
+	logger         *log.Logger             // non-nil overrides the built logger entirely
 }
 
 // Option mutates a Service during NewService.
@@ -25,6 +26,7 @@ type Option func(*Service)
 func NewService(opts ...Option) *Service {
 	s := &Service{
 		workflowsDir:   "./workflows",
+		appName:        "ai-agent-service",
 		extraFactories: map[string]node.Factory{},
 		extraHosts:     map[string]any{},
 	}
@@ -54,7 +56,19 @@ func WithHost(key string, h any) Option {
 	return func(s *Service) { s.extraHosts[key] = h }
 }
 
-// WithLogger overrides the default logger.
+// WithAppName sets the service identifier used in the default log prefix
+// ("[region] <appName> "). Defaults to "ai-agent-service". Ignored if WithLogger
+// supplies a logger. Use it to keep a migrated service's existing log prefix, e.g.
+// WithAppName("opensearchAiChatApi").
+func WithAppName(name string) Option {
+	return func(s *Service) {
+		if name != "" {
+			s.appName = name
+		}
+	}
+}
+
+// WithLogger overrides the default logger entirely (appName is then unused).
 func WithLogger(l *log.Logger) Option {
 	return func(s *Service) { s.logger = l }
 }
