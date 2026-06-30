@@ -1,0 +1,45 @@
+/* aichat-webix-tools.css — reasoning, tool_call, tool_result row visuals. */
+
+.aichat-webix-tool {
+    margin: 0.25rem auto;
+    width: 100%;
+    max-width: 48rem;
+    padding: 0 1rem;
+}
+.aichat-webix-tool-card {
+    border: var(--aichat-webix-ring);
+    border-radius: var(--aichat-webix-radius-sm);
+    background: #fff;
+    overflow: hidden;
+}
+.aichat-webix-tool-head {
+    cursor: pointer;
+    padding: 0.4rem 0.75rem;
+    font-size: 0.8rem;
+    color: var(--aichat-webix-muted);
+    user-select: none;
+}
+.aichat-webix-tool-head:hover { background: rgb(248, 250, 252); }
+.aichat-webix-tool-body {
+    padding: 0.5rem 0.75rem;
+    background: rgb(248, 250, 252);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.75rem;
+    color: rgb(30, 41, 59);
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0;
+}
+
+/* Reasoning is a softer card */
+.aichat-webix-tool.is-reasoning .aichat-webix-tool-card {
+    background: rgb(250, 250, 252);
+}
+.aichat-webix-tool.is-reasoning .aichat-webix-tool-body {
+    background: rgb(250, 250, 252);
+    font-family: inherit;
+    font-size: 0.85rem;
+    color: rgb(71, 85, 105);
+    line-height: 1.55;
+    white-space: normal;
+}

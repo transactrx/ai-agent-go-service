@@ -1,0 +1,73 @@
+/* aichat-webix-attachments.css — image bubble, file download chip, webix-chart host. */
+
+.aichat-webix-attachment-row {
+    margin: 0 auto;
+    width: 100%;
+    max-width: 48rem;
+    padding: 0.5rem 1rem;
+}
+
+.aichat-webix-image-bubble {
+    background: #fff;
+    border: var(--aichat-webix-ring);
+    border-radius: var(--aichat-webix-radius);
+    padding: 0.5rem;
+    box-shadow: var(--aichat-webix-shadow);
+    display: inline-block;
+    max-width: 90%;
+}
+.aichat-webix-image-bubble img {
+    max-width: 100%;
+    max-height: 480px;
+    display: block;
+    border-radius: calc(var(--aichat-webix-radius) - 0.25rem);
+}
+
+.aichat-webix-file-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    background: rgb(248, 250, 252);
+    border: var(--aichat-webix-ring);
+    border-radius: var(--aichat-webix-radius-sm);
+    color: rgb(30, 41, 59);
+    font-size: 0.875rem;
+    text-decoration: none;
+}
+.aichat-webix-file-chip:hover { background: rgb(241, 245, 249); }
+.aichat-webix-file-chip .aichat-webix-file-meta { color: var(--aichat-webix-muted); font-size: 0.75rem; }
+
+/* Chart attachment host */
+.aichat-webix-chart-bubble {
+    background: #fff;
+    border: var(--aichat-webix-ring);
+    border-radius: var(--aichat-webix-radius);
+    padding: 0.5rem;
+    box-shadow: var(--aichat-webix-shadow);
+    position: relative;
+}
+.aichat-webix-chart-toolbar {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.5rem;
+    z-index: 2;
+}
+.aichat-webix-chart-expand {
+    cursor: pointer;
+    background: rgba(255, 255, 255, 0.9);
+    border: var(--aichat-webix-ring);
+    border-radius: 0.25rem;
+    padding: 0.1rem 0.4rem;
+    font-size: 0.9rem;
+    color: var(--aichat-webix-muted);
+}
+.aichat-webix-chart-expand:hover { color: var(--aichat-webix-fg); }
+.aichat-webix-chart-host { width: 100%; height: 280px; }
+.aichat-webix-chart-error {
+    padding: 0.5rem 0.75rem;
+    color: var(--aichat-webix-error-fg);
+    background: var(--aichat-webix-error-bg);
+    border-radius: var(--aichat-webix-radius-sm);
+    font-size: 0.85rem;
+}

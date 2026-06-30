@@ -1,0 +1,10 @@
+# Build artifacts
+/dist/
+/ai-agent-service
+*.test
+*.out
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+# NOTE: /vendor/ is intentionally NOT ignored — deps are vendored and committed.

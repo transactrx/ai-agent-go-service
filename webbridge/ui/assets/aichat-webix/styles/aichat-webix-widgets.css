@@ -1,0 +1,95 @@
+/* aichat-webix-widgets.css — ConfirmAction (amber), PickOne (sky), AskUser (violet).
+   Each widget renders inside .aichat-webix-widget-host which is the mount target
+   for the real webix.ui sub-view, plus an optional "answered pill" overlay state. */
+
+.aichat-webix-widget {
+    margin: 0.5rem auto;
+    width: 100%;
+    max-width: 48rem;
+    padding: 0 1rem;
+}
+.aichat-webix-widget-card {
+    border-radius: var(--aichat-webix-radius);
+    padding: 0.75rem;
+}
+.aichat-webix-widget-prompt {
+    font-size: 0.875rem;
+    font-weight: 500;
+    margin-bottom: 0.5rem;
+}
+
+/* Amber — ConfirmAction */
+.aichat-webix-widget.is-confirm .aichat-webix-widget-card {
+    background: var(--aichat-webix-amber-bg);
+    border: 1px solid rgb(252, 211, 77);
+}
+.aichat-webix-widget.is-confirm .aichat-webix-widget-prompt { color: rgb(120, 53, 15); }
+
+/* Sky — PickOne */
+.aichat-webix-widget.is-pickone .aichat-webix-widget-card {
+    background: var(--aichat-webix-sky-bg);
+    border: 1px solid rgb(125, 211, 252);
+}
+.aichat-webix-widget.is-pickone .aichat-webix-widget-prompt { color: rgb(7, 89, 133); }
+
+/* Violet — AskUser */
+.aichat-webix-widget.is-askuser .aichat-webix-widget-card {
+    background: var(--aichat-webix-violet-bg);
+    border: 1px solid rgb(196, 181, 253);
+}
+.aichat-webix-widget.is-askuser .aichat-webix-widget-prompt { color: rgb(76, 29, 149); }
+
+/* Answered pill — replaces the interactive sub-view once result arrives */
+.aichat-webix-widget-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0.75rem;
+    border-radius: 999px;
+    background: rgb(255, 255, 255);
+    border: var(--aichat-webix-ring);
+    font-size: 0.8rem;
+    color: rgb(30, 41, 59);
+}
+.aichat-webix-widget-pill .label { color: var(--aichat-webix-muted); }
+.aichat-webix-widget-pill .value { font-weight: 600; }
+.aichat-webix-widget-pill .value.is-approved { color: rgb(4, 120, 87); }
+.aichat-webix-widget-pill .value.is-rejected { color: rgb(190, 18, 60); }
+.aichat-webix-widget-pill .server-error { color: rgb(190, 18, 60); font-size: 0.7rem; }
+
+.aichat-webix-widget-host { /* mount target for the real webix sub-view */ }
+.aichat-webix-widget-error {
+    padding: 0.5rem 0.75rem;
+    color: var(--aichat-webix-error-fg);
+    background: var(--aichat-webix-error-bg);
+    border-radius: var(--aichat-webix-radius-sm);
+    font-size: 0.85rem;
+}
+
+/* AskForm — label-on-top wrapping question labels (no truncation). */
+.aichat-webix-widget.is-askform .webix_view.aichat-webix-askform-label-host,
+.aichat-webix-widget.is-askform .aichat-webix-askform-label-host .webix_template {
+    padding: 0 !important;
+    background: transparent !important;
+    overflow: visible !important;
+}
+.aichat-webix-askform-label {
+    white-space: normal;
+    word-break: break-word;
+    overflow: visible;
+    color: var(--aichat-webix-fg);
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 18px;
+}
+.aichat-webix-askform-label .req,
+.aichat-webix-widget.is-askform .aichat-webix-askform-checkbox .req {
+    color: rgb(220, 38, 38);
+    margin-left: 2px;
+    font-weight: 600;
+}
+/* Let a long checkbox label wrap instead of clipping. */
+.aichat-webix-widget.is-askform .aichat-webix-askform-checkbox .webix_label_right {
+    white-space: normal;
+    line-height: 18px;
+}
