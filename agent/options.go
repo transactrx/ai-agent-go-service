@@ -14,6 +14,7 @@ import (
 type Service struct {
 	workflowsDir   string
 	appName        string                  // log-prefix identifier; Run builds "[region] <appName> " when logger is nil
+	repositoryURL  string                  // advertised via nats-service SetRepositoryURL
 	extraFactories map[string]node.Factory // type key -> factory; applied AFTER defaults (override-capable)
 	extraHosts     map[string]any          // merged into the engine hosts map
 	logger         *log.Logger             // non-nil overrides the built logger entirely
@@ -27,6 +28,7 @@ func NewService(opts ...Option) *Service {
 	s := &Service{
 		workflowsDir:   "./workflows",
 		appName:        "ai-agent-service",
+		repositoryURL:  "https://github.com/transactrx/ai-agent-go-service",
 		extraFactories: map[string]node.Factory{},
 		extraHosts:     map[string]any{},
 	}
@@ -64,6 +66,18 @@ func WithAppName(name string) Option {
 	return func(s *Service) {
 		if name != "" {
 			s.appName = name
+		}
+	}
+}
+
+// WithRepositoryURL overrides the repository URL advertised through nats-service
+// (SetRepositoryURL). Defaults to the library repo. A migrated consumer passes its
+// own repo to keep the advertised metadata unchanged, e.g.
+// WithRepositoryURL("https://github.com/transactrx/opensearchAiChatApi").
+func WithRepositoryURL(url string) Option {
+	return func(s *Service) {
+		if url != "" {
+			s.repositoryURL = url
 		}
 	}
 }

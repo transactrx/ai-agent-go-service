@@ -41,7 +41,7 @@ func (s *Service) Run(ctx context.Context) error {
 		return fmt.Errorf("nats init: %w", err)
 	}
 	natservice.SetDescription("Flexible workflow engine over NATS. Workflows registered as endpoints.")
-	natservice.SetRepositoryURL("https://github.com/transactrx/ai-agent-go-service")
+	natservice.SetRepositoryURL(s.repositoryURL)
 
 	hosts := map[string]any{
 		"nats":          natservice,
