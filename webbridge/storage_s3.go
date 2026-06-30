@@ -26,9 +26,9 @@ type S3Storage struct {
 	presignTTL time.Duration
 }
 
-// NewS3StorageWithClient is the test-friendly constructor (accepts any
-// S3Client). Production code calls NewAwsS3Client(region) to get a real
-// S3Client (added in B6 alongside route wiring).
+// NewS3StorageWithClient constructs an S3Storage from any S3Client. The host
+// supplies the concrete (aws-sdk-go-v2 backed) S3Client and injects the result
+// via Options.Uploads; the library stays SDK-agnostic at the storage seam.
 func NewS3StorageWithClient(c S3Client, bucket, region string, ttl time.Duration) *S3Storage {
 	return &S3Storage{client: c, bucket: bucket, region: region, presignTTL: ttl}
 }

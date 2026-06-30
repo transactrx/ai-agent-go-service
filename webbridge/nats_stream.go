@@ -63,7 +63,7 @@ func getNatsConn() (*nats.Conn, error) {
 			opts = append(opts, nats.UserJWTAndSeed(jwt, key))
 		}
 		opts = append(opts,
-			nats.Name("powerlineclaimsearchwebapp-aichatviewer"),
+			nats.Name("ai-agent-webbridge"),
 			nats.MaxReconnects(-1),
 			nats.ReconnectWait(2*time.Second),
 		)
