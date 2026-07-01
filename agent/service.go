@@ -56,16 +56,23 @@ func (s *Service) Run(ctx context.Context) error {
 	hosts["s3files"] = s3files.Uploader(uploader)
 	logger.Printf("boot: s3files uploader configured (bucket=%s)", uploader.Bucket())
 
+	// Prompt-store table: explicit env wins; otherwise derive a generic default
+	// from APP_NAME (same convention as the s3 files bucket). No app-specific name
+	// is baked into the library — if APP_NAME is also unset, the prompt store is
+	// simply disabled rather than pointed at some other app's table.
 	promptTable := strings.TrimSpace(os.Getenv("DYNAMODB_PROMPTS_TABLE"))
 	if promptTable == "" {
-		promptTable = "opensearchaichatapi-assistant-prompts"
+		if app := strings.TrimSpace(os.Getenv("APP_NAME")); app != "" {
+			promptTable = strings.ToLower(app) + "-assistant-prompts"
+		}
 	}
 	promptRegion := strings.TrimSpace(os.Getenv("AWS_REGION_DYNAMODB"))
 	if promptRegion == "" {
 		promptRegion = "us-east-1"
 	}
-	prompts, perr := promptstore.New(ctx, promptTable, promptRegion)
-	if perr != nil {
+	if promptTable == "" {
+		logger.Printf("boot: promptstore disabled (no DYNAMODB_PROMPTS_TABLE and no APP_NAME to derive one)")
+	} else if prompts, perr := promptstore.New(ctx, promptTable, promptRegion); perr != nil {
 		logger.Printf("boot: promptstore disabled (init failed): %v", perr)
 	} else if perr := prompts.Provision(ctx, logger); perr != nil {
 		logger.Printf("boot: promptstore disabled (provision failed): %v", perr)

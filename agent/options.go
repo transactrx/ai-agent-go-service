@@ -61,7 +61,7 @@ func WithHost(key string, h any) Option {
 // WithAppName sets the service identifier used in the default log prefix
 // ("[region] <appName> "). Defaults to "ai-agent-service". Ignored if WithLogger
 // supplies a logger. Use it to keep a migrated service's existing log prefix, e.g.
-// WithAppName("opensearchAiChatApi").
+// WithAppName("my-agent-service").
 func WithAppName(name string) Option {
 	return func(s *Service) {
 		if name != "" {
@@ -73,7 +73,7 @@ func WithAppName(name string) Option {
 // WithRepositoryURL overrides the repository URL advertised through nats-service
 // (SetRepositoryURL). Defaults to the library repo. A migrated consumer passes its
 // own repo to keep the advertised metadata unchanged, e.g.
-// WithRepositoryURL("https://github.com/transactrx/opensearchAiChatApi").
+// WithRepositoryURL("https://github.com/your-org/your-service").
 func WithRepositoryURL(url string) Option {
 	return func(s *Service) {
 		if url != "" {

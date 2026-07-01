@@ -278,13 +278,13 @@ func TestResolveWorkflowID(t *testing.T) {
 	cases := []struct {
 		in, want string
 	}{
-		{"", defaultWorkflowID},
-		{"powerlineSearch", "powerlineSearch"},
+		{"", ""},                       // empty → rejected by caller
+		{"sampleWorkflow", "sampleWorkflow"},
 		{"valid-id_1", "valid-id_1"},
-		{"bad.subject", defaultWorkflowID},
-		{"wild*card", defaultWorkflowID},
-		{"a>b", defaultWorkflowID},
-		{" spaces ", defaultWorkflowID},
+		{"bad.subject", ""},            // subject-illegal chars → "" → rejected
+		{"wild*card", ""},
+		{"a>b", ""},
+		{" spaces ", ""},
 	}
 	for _, tc := range cases {
 		if got := resolveWorkflowID(tc.in); got != tc.want {

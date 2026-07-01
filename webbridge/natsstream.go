@@ -14,13 +14,11 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// This file inlines the small subset of the opensearchAiChatApi
-// `pkg/transport/natsstream` package that the bridge needs. Inlined rather
-// than imported because that source repo is private; depending on it would
-// require authenticated module fetches in CI. The wire protocol is documented
-// in docs/superpowers/specs/2026-05-06-ai-chat-viewer-design.md §3.
+// This file inlines the small subset of the agent half's multi-response
+// `natsstream` wire protocol that the bridge needs, kept local so webbridge
+// stays self-contained (no cross-package coupling to the engine internals).
 
-// NATS header names exchanged with opensearchAiChatApi over the multi-response
+// NATS header names exchanged with the agent half over the multi-response
 // stream. Underscore-prefixed per the nats-service convention.
 const (
 	hdrStreamEvent           = "_Stream_Event"
