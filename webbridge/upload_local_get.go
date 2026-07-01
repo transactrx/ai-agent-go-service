@@ -4,6 +4,7 @@ package webbridge
 import (
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -32,6 +33,39 @@ func uploadLocalGet(local *LocalStorage) fiber.Handler {
 		if _, err := os.Stat(path); err != nil {
 			return c.Status(404).JSON(fiber.Map{"code": "not-found"})
 		}
-		return c.SendFile(path, true)
+		// XSS hardening: these files are served same-origin, so a stored HTML/SVG
+		// document would otherwise render (and run script) in the app's origin.
+		// nosniff stops content-type sniffing; we then constrain the declared
+		// Content-Type to a safe inline allowlist and force everything else to
+		// application/octet-stream (download, never render). Inline images/PDF —
+		// the reason we don't use Content-Disposition: attachment — still render.
+		c.Set(fiber.HeaderXContentTypeOptions, "nosniff")
+		if err := c.SendFile(path, true); err != nil {
+			return err
+		}
+		if !safeInlineContentType(c.GetRespHeader(fiber.HeaderContentType)) {
+			c.Set(fiber.HeaderContentType, "application/octet-stream")
+		}
+		return nil
+	}
+}
+
+// safeInlineContentType reports whether a Content-Type is safe to render inline
+// from a same-origin upload. Allowed: non-SVG images, PDF, and plain text-ish
+// data (matching the upload MIME allowlist). Everything else — notably
+// text/html, image/svg+xml, and unknown types — is not, and is downgraded to a
+// download by the caller.
+func safeInlineContentType(ct string) bool {
+	if i := strings.IndexByte(ct, ';'); i >= 0 { // drop "; charset=..."
+		ct = ct[:i]
+	}
+	ct = strings.ToLower(strings.TrimSpace(ct))
+	switch {
+	case strings.HasPrefix(ct, "image/") && ct != "image/svg+xml":
+		return true
+	case ct == "application/pdf", ct == "text/plain", ct == "text/csv", ct == "application/json":
+		return true
+	default:
+		return false
 	}
 }

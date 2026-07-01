@@ -54,7 +54,13 @@ func (t *natsChatTrigger) Init(_ context.Context, env node.NodeEnv) error {
 	t.requestTimeout = time.Duration(t.cfg.RequestTimeoutSeconds) * time.Second
 
 	// IDT validator: env-driven. Disabled by default; pass-through when off.
-	t.idtValidator = idt.NewFromEnv(t.natsHost.GetNatsService())
+	// When IDT_VALIDATION=true it requires APP_ID + APP_FUNCTION_ID — a missing
+	// one is a fatal misconfiguration, surfaced here at engine startup.
+	validator, err := idt.NewFromEnv(t.natsHost.GetNatsService())
+	if err != nil {
+		return fmt.Errorf("trigger/nats-chat: %w", err)
+	}
+	t.idtValidator = validator
 
 	headerDocs := []nats_service.HeaderDoc{
 		{Name: t.cfg.IdentitySource.NatsUserHeader, Description: "NATS user (service identity)", Required: false},

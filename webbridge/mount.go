@@ -67,6 +67,13 @@ func Mount(router fiber.Router, o Options) error {
 	}
 	b := &bridge{auth: o.Auth, authz: authz, natsBasePath: o.NATSChatPath, logger: lg}
 
+	// Honor the optional NATS client name from the default adapter (advertised in
+	// /connz). Only the shipped GoFiberSessionAuth carries ConnName; custom
+	// Authenticators keep the default.
+	if gf, ok := o.Auth.(GoFiberSessionAuth); ok {
+		setNatsConnName(gf.ConnName)
+	}
+
 	// Core routes — always registered.
 	router.Post("/aichatviewer/token", b.issueToken)
 	router.Get("/aichatviewer/workflows", b.listWorkflows)

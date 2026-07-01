@@ -49,6 +49,19 @@ func realDoStreamingRequest(msg *nats.Msg) (streamSubscription, error) {
 	return sub, nil
 }
 
+// natsConnName is the nats.Name advertised on the bridge's NATS connection
+// (visible in /connz monitoring). Overridable via GoFiberSessionAuth.ConnName,
+// applied by Mount before the lazy connect in getNatsConn.
+var natsConnName = "ai-agent-webbridge"
+
+// setNatsConnName overrides the advertised NATS client name. No-op on empty.
+// Must be called before the first getNatsConn (Mount runs well before any stream).
+func setNatsConnName(name string) {
+	if name != "" {
+		natsConnName = name
+	}
+}
+
 func getNatsConn() (*nats.Conn, error) {
 	natsConnOnce.Do(func() {
 		url := os.Getenv("NATS_URL")
@@ -63,7 +76,7 @@ func getNatsConn() (*nats.Conn, error) {
 			opts = append(opts, nats.UserJWTAndSeed(jwt, key))
 		}
 		opts = append(opts,
-			nats.Name("ai-agent-webbridge"),
+			nats.Name(natsConnName),
 			nats.MaxReconnects(-1),
 			nats.ReconnectWait(2*time.Second),
 		)

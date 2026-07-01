@@ -16,14 +16,12 @@ import (
 
 const (
 	// natsHdrAccount and natsHdrUser are the header names the chat workflow
-	// expects (per opensearchAiChatApi docs/api-reference.md). Distinct from the
-	// host's internal Account-Id-Header used for non-chat NATS calls.
+	// expects (the agent half's nats-chat trigger identity headers). Distinct from
+	// the host's internal Account-Id-Header used for non-chat NATS calls.
 	natsHdrAccount  = "X-Account-Id"
 	natsHdrUser     = "X-User-Id"
 	natsHdrUserName = "X-User-Name"
 	natsHdrTimeZone = "X-Time-Zone"
-
-	defaultWorkflowID = "powerlineSearch"
 )
 
 // bridge holds the per-Mount state and the injected host seams. Methods on
@@ -235,7 +233,13 @@ func (b *bridge) streamChat(c *websocket.Conn) {
 		_ = c.WriteJSON(wsErrorFrame("workflow-required", "No workflow selected for this Search"))
 		return
 	}
+	// Empty here means the id contained subject-illegal chars (".", "*", ">", …).
+	// Reject rather than route it anywhere — a generic bridge has no default.
 	resolvedWorkflowID := resolveWorkflowID(initialWorkflowID)
+	if resolvedWorkflowID == "" {
+		_ = c.WriteJSON(wsErrorFrame("invalid-workflow", "Invalid workflow identifier"))
+		return
+	}
 
 	// Authorization gate — ONCE per stream, fail-closed.
 	if allow, reason := b.authz.Authorize(accountId, initialIndexName, resolvedWorkflowID); !allow {
@@ -508,13 +512,14 @@ func truncateForAudit(s string, max int) string {
 	return s[:max] + "…"
 }
 
-// resolveWorkflowID validates and returns the workflow id used to build the
-// NATS subject. Empty or non-conforming ids fall back to the default. Only
-// [A-Za-z0-9_-] are permitted so a client can't smuggle subject tokens (".",
-// "*", ">") via the WS request body.
+// resolveWorkflowID validates the workflow id used to build the NATS subject.
+// Only [A-Za-z0-9_-] are permitted so a client can't smuggle subject tokens
+// (".", "*", ">") via the WS request body. Empty or non-conforming ids return
+// "" — the caller rejects the request rather than falling back to any default
+// workflow (a generic bridge has no tenant workflow to fall back to).
 func resolveWorkflowID(raw string) string {
 	if raw == "" {
-		return defaultWorkflowID
+		return ""
 	}
 	for _, r := range raw {
 		switch {
@@ -523,7 +528,7 @@ func resolveWorkflowID(raw string) string {
 		case r >= '0' && r <= '9':
 		case r == '_' || r == '-':
 		default:
-			return defaultWorkflowID
+			return ""
 		}
 	}
 	return raw

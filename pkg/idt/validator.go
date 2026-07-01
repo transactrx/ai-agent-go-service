@@ -15,10 +15,6 @@ import (
 
 const HeaderIDT = "X-TRX-IDT"
 
-// defaultFunctionId is this project's RBAC functionId, used when APP_FUNCTION_ID
-// is unset. Kept overridable via env so it can change without a code release.
-const defaultFunctionId = "OPENSEARCHAICHATAPIFUNCTIONID"
-
 type ValidateResult struct {
 	Valid           bool    `json:"valid"`
 	UserID          string  `json:"userId"`
@@ -38,7 +34,13 @@ type Validator struct {
 	requestTimeout time.Duration
 }
 
-func NewFromEnv(nc *nats.Conn) *Validator {
+// NewFromEnv builds the IDT validator from the environment. When
+// IDT_VALIDATION=true it REQUIRES APP_ID (agentId) and APP_FUNCTION_ID (RBAC
+// functionId) — these identify THIS agent + its permission function to Identity
+// and are inherently tenant-specific, so the generic library carries no default
+// and returns an error if they are missing rather than validating against the
+// wrong function. When validation is off, both may be empty (pass-through).
+func NewFromEnv(nc *nats.Conn) (*Validator, error) {
 	enabled := strings.EqualFold(strings.TrimSpace(os.Getenv("IDT_VALIDATION")), "true")
 	failOpen := strings.EqualFold(strings.TrimSpace(os.Getenv("IDT_FAIL_OPEN")), "true")
 	// observeOnly: TEMPORARY rollout gate. When true, validation runs and logs the
@@ -48,11 +50,11 @@ func NewFromEnv(nc *nats.Conn) *Validator {
 	observeOnly := strings.EqualFold(strings.TrimSpace(os.Getenv("IDT_OBSERVE_ONLY")), "true")
 	if !enabled {
 		log.Printf("idt: IDT_VALIDATION is not true — IDT validation disabled (pass-through)")
-		return &Validator{enabled: false, failOpen: failOpen}
+		return &Validator{enabled: false, failOpen: failOpen}, nil
 	}
 	if nc == nil {
 		log.Printf("WARNING: IDT_VALIDATION=true but no NATS connection provided — disabling")
-		return &Validator{enabled: false, failOpen: failOpen}
+		return &Validator{enabled: false, failOpen: failOpen}, nil
 	}
 	base := strings.TrimSpace(os.Getenv("NATS_IDENTITY_BASE_PATH"))
 	if base == "" {
@@ -65,12 +67,14 @@ func NewFromEnv(nc *nats.Conn) *Validator {
 	// agentId identifies THIS agent to Identity. Dedicated APP_ID env (kept separate
 	// from APP_NAME since the identity-side app id may differ from the project name).
 	agentId := strings.TrimSpace(os.Getenv("APP_ID"))
-	// functionId is this project's RBAC function — roles grant one/many functionIds and
-	// Identity checks the token's user against it. Set via APP_FUNCTION_ID (env so it can
-	// change without a code release); defaults to this project's known functionId.
+	// functionId is the consuming app's RBAC function — roles grant one/many functionIds
+	// and Identity checks the token's user against it. Set via APP_FUNCTION_ID. It is
+	// tenant-specific: the library has no default and refuses to enable without it.
 	functionId := strings.TrimSpace(os.Getenv("APP_FUNCTION_ID"))
-	if functionId == "" {
-		functionId = defaultFunctionId
+	// Fail-closed on misconfiguration: with validation ON, both identifiers are
+	// mandatory — otherwise the agent would validate against a blank/wrong function.
+	if agentId == "" || functionId == "" {
+		return nil, fmt.Errorf("idt: IDT_VALIDATION=true requires APP_ID and APP_FUNCTION_ID to be set (got APP_ID=%q, APP_FUNCTION_ID=%q)", agentId, functionId)
 	}
 	timeout := 5 * time.Second
 	if raw := strings.TrimSpace(os.Getenv("IDT_VALIDATE_TIMEOUT_SECONDS")); raw != "" {
@@ -90,7 +94,7 @@ func NewFromEnv(nc *nats.Conn) *Validator {
 		functionId:     functionId,
 		nc:             nc,
 		requestTimeout: timeout,
-	}
+	}, nil
 }
 
 func (v *Validator) Enabled() bool { return v.enabled }
