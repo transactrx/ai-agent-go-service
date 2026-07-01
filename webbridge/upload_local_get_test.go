@@ -3,6 +3,7 @@ package webbridge
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -46,6 +47,70 @@ func TestUploadLocalGetServesPreviouslyStoredFile(t *testing.T) {
 	n, _ := resp.Body.Read(buf)
 	if string(buf[:n]) != "hello" {
 		t.Fatalf("body: %q", buf[:n])
+	}
+}
+
+// serveStored puts a file then GETs it back through uploadLocalGet, returning
+// the response for header assertions.
+func serveStored(t *testing.T, filename, mediaType string, data []byte) *http.Response {
+	t.Helper()
+	dir := t.TempDir()
+	local := NewLocalStorage(dir, "/aichatviewer/upload-local")
+	res, err := local.Put(context.Background(), AttachmentInput{
+		AccountID: "acct-test", Filename: filename, MediaType: mediaType, Data: data,
+	})
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	id := strings.Split(strings.TrimPrefix(res.URL, "/aichatviewer/upload-local/"), "/")[0]
+
+	app := fiber.New()
+	app.Use(func(c *fiber.Ctx) error { c.Locals(localAccountID, "acct-test"); return c.Next() })
+	app.Get("/aichatviewer/upload-local/:id/:filename", uploadLocalGet(local))
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/aichatviewer/upload-local/"+id+"/"+filename, nil))
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	return resp
+}
+
+func TestUploadLocalGetForcesDownloadForActiveContent(t *testing.T) {
+	// A stored HTML document must NOT be served as text/html (would run script
+	// same-origin). It must be downgraded to a download, with nosniff set.
+	resp := serveStored(t, "evil.html", "text/html", []byte("<script>alert(1)</script>"))
+	if got := resp.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/octet-stream") {
+		t.Fatalf("Content-Type = %q, want application/octet-stream (must not render as html)", ct)
+	}
+}
+
+func TestUploadLocalGetPreservesInlineImages(t *testing.T) {
+	// Inline images must keep their real type (this is why we don't blanket
+	// Content-Disposition: attachment).
+	resp := serveStored(t, "pic.png", "image/png", []byte("\x89PNG\r\n\x1a\n"))
+	if got := resp.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "image/png") {
+		t.Fatalf("Content-Type = %q, want image/png (inline preserved)", ct)
+	}
+}
+
+func TestSafeInlineContentType(t *testing.T) {
+	safe := []string{"image/png", "image/jpeg", "image/gif; charset=binary", "application/pdf", "text/plain; charset=utf-8", "text/csv", "application/json"}
+	unsafe := []string{"text/html", "text/html; charset=utf-8", "image/svg+xml", "application/xhtml+xml", "application/javascript", ""}
+	for _, ct := range safe {
+		if !safeInlineContentType(ct) {
+			t.Errorf("safeInlineContentType(%q) = false, want true", ct)
+		}
+	}
+	for _, ct := range unsafe {
+		if safeInlineContentType(ct) {
+			t.Errorf("safeInlineContentType(%q) = true, want false", ct)
+		}
 	}
 }
 

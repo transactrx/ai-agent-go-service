@@ -11,7 +11,7 @@ func TestAllowAll_Authorizes(t *testing.T) {
 
 func TestIdentity_ZeroValueIsEmpty(t *testing.T) {
 	var id Identity
-	if id.AccountID != "" || id.SessionID != "" {
+	if id.AccountID != "" || id.UserID != "" || id.UserName != "" || id.TimeZone != "" || id.SessionID != "" {
 		t.Fatal("zero Identity must be empty")
 	}
 }

@@ -3,6 +3,7 @@ package webbridge
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"sync"
 	"testing"
@@ -45,7 +46,7 @@ func newTestBridge(warmed map[string]string) *bridge {
 		auth:         fakeAuth{id: Identity{AccountID: "a", UserID: "u"}, warmed: warmed},
 		authz:        AllowAll{},
 		natsBasePath: "trx.test",
-		logger:       log.Default(),
+		logger:       log.New(io.Discard, "", 0), // silence ws-pump-trace/IDT_METRIC noise in test output
 	}
 }
 

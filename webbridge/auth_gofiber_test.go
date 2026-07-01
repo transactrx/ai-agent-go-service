@@ -2,8 +2,6 @@ package webbridge
 
 import (
 	"testing"
-
-	"github.com/nats-io/nats.go"
 )
 
 func TestGoFiberSessionAuth_OutboundMessageSetsHeaders(t *testing.T) {
@@ -15,7 +13,6 @@ func TestGoFiberSessionAuth_OutboundMessageSetsHeaders(t *testing.T) {
 	if msg.Header.Get("X-Account-Id") != "acct" {
 		t.Fatalf("missing identity header")
 	}
-	_ = nats.Msg{}
 }
 
 func TestIdtPrefix(t *testing.T) {
