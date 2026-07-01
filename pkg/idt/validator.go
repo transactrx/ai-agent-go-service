@@ -56,13 +56,16 @@ func NewFromEnv(nc *nats.Conn) (*Validator, error) {
 		log.Printf("WARNING: IDT_VALIDATION=true but no NATS connection provided — disabling")
 		return &Validator{enabled: false, failOpen: failOpen}, nil
 	}
+	// The identity-service NATS subject is deployment-specific. Defaults are
+	// generic placeholders (no tenant/org prefix); a deployment points at its own
+	// identity service via NATS_IDENTITY_BASE_PATH / NATS_IDENTITY_VALIDATE_SUBJECT.
 	base := strings.TrimSpace(os.Getenv("NATS_IDENTITY_BASE_PATH"))
 	if base == "" {
-		base = "trx.identityservice"
+		base = "identityservice"
 	}
 	suffix := strings.TrimSpace(os.Getenv("NATS_IDENTITY_VALIDATE_SUBJECT"))
 	if suffix == "" {
-		suffix = "validateInternalToken"
+		suffix = "validateToken"
 	}
 	// agentId identifies THIS agent to Identity. Dedicated APP_ID env (kept separate
 	// from APP_NAME since the identity-side app id may differ from the project name).
