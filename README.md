@@ -1,5 +1,7 @@
 # ai-agent-go-service
 
+Current stable release: **v1.0.0** (first stable version, promoted from v0.0.3).
+
 Private TransactRx company-standard library for building AI chat agents. Two halves joined by NATS —
 use either or both:
 
