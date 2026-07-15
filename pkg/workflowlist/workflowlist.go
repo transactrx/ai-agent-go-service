@@ -47,7 +47,17 @@ func (s *service) handleList(msg *nats_service.NatsMessage) *nats_service.NatsSe
 func Register(deps Deps) error {
 	s := &service{eng: deps.Engine}
 	regs := []nats_service.EndpointRegistration{
-		{Path: "ListWorkflows", Description: "List currently-loaded chat workflows as [{id,description}]", Handler: s.handleList},
+		{
+			Path: "ListWorkflows",
+			Description: "List currently-loaded chat workflows. Use each id as the chat request subject: <basePath>.<id>. " +
+				"Request body: {} (empty JSON object)",
+			Handler: s.handleList,
+			Response: &nats_service.ResponseDoc{
+				Description: "Loaded workflows sorted by id.",
+				ContentType: "application/json",
+				Example:     `[{"id": "eprescribeSearch", "description": "AI chat over ePrescribe transactions"}, {"id": "powerlineSearch", "description": "AI chat over PowerLine pharmacy claims"}]`,
+			},
+		},
 	}
 	return deps.NatsHost.AddEndpointWithDocs(regs)
 }

@@ -52,10 +52,40 @@ type saveBody struct {
 func Register(deps Deps) error {
 	s := &service{deps: deps, renderer: render.NewRenderer()}
 	regs := []nats_service.EndpointRegistration{
-		{Path: "PromptGet", Description: "Get fixed + default + current flexible prompt for a node field", Handler: s.handleGet},
-		{Path: "PromptSave", Description: "Save a new flexible prompt version (X-User-Id required)", Handler: s.handleSave,
-			Headers: []nats_service.HeaderDoc{{Name: "X-User-Id", Description: "Saver identity for audit", Required: true}}},
-		{Path: "PromptHistory", Description: "List saved versions for a node field", Handler: s.handleHistory},
+		{
+			Path: "PromptGet",
+			Description: "Get the prompt for one overridable node field: the fixed part, the workflow-JSON default, and the current override with its source ('db' or 'default'). " +
+				"Request body: {workflowId, nodeId, field}",
+			Handler: s.handleGet,
+			Response: &nats_service.ResponseDoc{
+				Description: "Fixed + default + current prompt text, and where the current value comes from.",
+				ContentType: "application/json",
+				Example:     `{"fixed": "You are a pharmacy claims assistant...", "defaultFlex": "Answer using the search tool...", "currentFlex": "Answer using the search tool... (edited)", "source": "db"}`,
+			},
+		},
+		{
+			Path: "PromptSave",
+			Description: "Save a new version of a flexible prompt. Content is template-validated before saving; the change is broadcast and hot-applied on all running instances. " +
+				"Request body: {workflowId, nodeId, field, content}",
+			Handler: s.handleSave,
+			Headers: []nats_service.HeaderDoc{{Name: "X-User-Id", Description: "Author recorded in version history", Required: true, Example: "jdoe"}},
+			Response: &nats_service.ResponseDoc{
+				Description: "Identifier of the newly saved version.",
+				ContentType: "application/json",
+				Example:     `{"version": "v#0001717500000000"}`,
+			},
+		},
+		{
+			Path: "PromptHistory",
+			Description: "List saved versions of a prompt field, newest first. " +
+				"Request body: {workflowId, nodeId, field, limit} — limit is optional, default 20.",
+			Handler: s.handleHistory,
+			Response: &nats_service.ResponseDoc{
+				Description: "Saved versions, newest first. Content is the raw template text (${ENV} unresolved).",
+				ContentType: "application/json",
+				Example:     `[{"Version": "v#0001717500000000", "Content": "Answer using the search tool...", "SavedBy": "jdoe", "CreatedAt": "2026-07-14T10:00:00Z"}]`,
+			},
+		},
 	}
 	if err := deps.NatsHost.AddEndpointWithDocs(regs); err != nil {
 		return err

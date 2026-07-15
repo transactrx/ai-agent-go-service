@@ -63,15 +63,28 @@ func (t *natsChatTrigger) Init(_ context.Context, env node.NodeEnv) error {
 	t.idtValidator = validator
 
 	headerDocs := []nats_service.HeaderDoc{
-		{Name: t.cfg.IdentitySource.NatsUserHeader, Description: "NATS user (service identity)", Required: false},
-		{Name: t.cfg.IdentitySource.UserHeader, Description: "Application user id (human)", Required: *t.cfg.IdentitySource.RequireUser},
-		{Name: t.cfg.IdentitySource.AccountHeader, Description: "Account id (security scope)", Required: *t.cfg.IdentitySource.RequireAccount},
+		{Name: t.cfg.IdentitySource.AccountHeader, Description: "Account id — security scope for all data the agent can query", Required: *t.cfg.IdentitySource.RequireAccount, Example: "5480"},
+		{Name: t.cfg.IdentitySource.UserHeader, Description: "Human user id — keys chat session memory and audit logging", Required: *t.cfg.IdentitySource.RequireUser, Example: "jdoe"},
+		{Name: t.cfg.IdentitySource.UserNameHeader, Description: "Human display name, given to the agent for personalized answers", Required: false, Example: "John Doe"},
+		{Name: t.cfg.IdentitySource.TimeZoneHeader, Description: "IANA timezone of the asker; used to resolve date questions like 'today'", Required: false, Example: "America/New_York"},
+		{Name: t.cfg.IdentitySource.NatsUserHeader, Description: "Calling service identity; set automatically by the nats-service client", Required: false, Example: "powerlineWebApp"},
 	}
 	reg := nats_service.EndpointRegistration{
-		Path:        t.subject,
-		Description: fmt.Sprintf("Workflow %s — chat trigger over NATS", t.workflowID),
-		Headers:     headerDocs,
-		Handler:     t.handle,
+		Path: t.subject,
+		Description: fmt.Sprintf(
+			"AI chat endpoint for workflow '%s'. Streams the agent's answer as NATS events on the reply inbox. "+
+				"Request body: {message, sessionId} — message is required; sessionId is optional, the server generates one and returns it in the start event.",
+			t.workflowID),
+		Headers: headerDocs,
+		Response: &nats_service.ResponseDoc{
+			Description: "Stream of NATS events on the reply inbox: start → (delta | thought | tool_call | tool_result | attachment)* → complete | error. " +
+				"Event type is in the _Stream_Event header, ordering in _Stream_Sequence. " +
+				"The start event carries _Stream_Cancel_Subject — publish any message on that subject to cancel. " +
+				"The example below shows each event type's payload.",
+			ContentType: "application/json",
+			Example:     `{"start": {"sessionId": "e1f0c9a2-4b7d-4f7e-9c1a-8f2d3e4a5b6c"}, "delta": {"text": "Today you have 1,204 paid claims..."}, "tool_call": {"toolUseId": "toolu_01", "name": "opensearch_query", "input": {"query": "..."}}, "tool_result": {"toolUseId": "toolu_01", "output": {"hits": "..."}, "isError": false}, "complete": {"finalText": "Today you have 1,204 paid claims...", "messageStop": "end_turn"}, "error": {"code": "cancelled", "message": "stream cancelled by client"}}`,
+		},
+		Handler: t.handle,
 	}
 	return t.natsHost.AddEndpointWithDocs([]nats_service.EndpointRegistration{reg})
 }
