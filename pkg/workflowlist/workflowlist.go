@@ -50,7 +50,7 @@ func Register(deps Deps) error {
 		{
 			Path: "ListWorkflows",
 			Description: "List currently-loaded chat workflows. Use each id as the chat request subject: <basePath>.<id>. " +
-				"Request body: {} (empty JSON object)",
+				"Send an empty JSON object as the body. Example body: {}",
 			Handler: s.handleList,
 			Response: &nats_service.ResponseDoc{
 				Description: "Loaded workflows sorted by id.",

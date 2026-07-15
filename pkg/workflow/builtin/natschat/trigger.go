@@ -72,9 +72,13 @@ func (t *natsChatTrigger) Init(_ context.Context, env node.NodeEnv) error {
 	reg := nats_service.EndpointRegistration{
 		Path: t.subject,
 		Description: fmt.Sprintf(
-			"AI chat endpoint for workflow '%s'. Streams the agent's answer as NATS events on the reply inbox. "+
-				"Request body: {message, sessionId} — message is required; sessionId is optional, the server generates one and returns it in the start event.",
-			t.workflowID),
+			"AI chat endpoint for workflow '%s'. Streams the agent's answer as NATS events on the reply inbox. ",
+			t.workflowID) +
+			`Example body: {"message":"How are the transactions doing today?","sessionId":"e1f0c9a2-4b7d-4f7e-9c1a-8f2d3e4a5b6c"}`,
+		Parameters: []nats_service.ParameterDoc{
+			{Name: "message", Description: "The user's question for the agent", Required: true, Example: "How are the transactions doing today?"},
+			{Name: "sessionId", Description: "Conversation id — omit on the first message; the server generates one and returns it in the start event", Required: false, Example: "e1f0c9a2-4b7d-4f7e-9c1a-8f2d3e4a5b6c"},
+		},
 		Headers: headerDocs,
 		Response: &nats_service.ResponseDoc{
 			Description: "Stream of NATS events on the reply inbox: start → (delta | thought | tool_call | tool_result | attachment)* → complete | error. " +
