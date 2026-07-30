@@ -37,8 +37,10 @@ a fallback.
   catalog family; a version prefix pins a line ("opus 4.5").
 - Success reply: `ModelInfo` JSON; `invokeId` is the exact ID inference must use (on-demand
   model ID, or `us.`/`global.` cross-region profile ID). May be empty → not invocable.
-- Error reply: nats-service convention — `STATUS` header ≠ "200" (e.g. 4001 invalid body,
-  4002 missing field, 4004 no match) with `NatsServiceError` JSON body.
+- Error reply: nats-service convention — header `STATUS` carries the transport status
+  (`NatsServiceError.Status`, 400/500); the finer-grained codes (4001 invalid body, 4002
+  missing field, 4004 no match) are the BODY's `apiStatusCode` field, which this client does
+  not read.
 - Transport: plain NATS request/reply on the node's existing conn
   (`env.Host("nats")` → `NatService.GetNatsService()`), 10 s timeout — same pattern as
   `pkg/idt/validator.go`.
@@ -50,16 +52,26 @@ a fallback.
 ```
 runOnce:
   cur = current(); parseModelID(cur)          # unparseable → skip (unchanged)
+  declined = ""
   1. gateway (when resolve != nil):
        invokeId, err = resolve(ctx)
-       err/empty → warn, fall through to 2
+       err → warn, fall through to 2
        invokeId == cur → outcome already-latest (resolver=gateway), return
-       else candidate = invokeId, resolver=gateway
+       else: gatewayCandidateOK(invokeId, cur)?        # parseable + same family
+         rejected → warn, fall through to 2 (never validated)
+         ok → tryUpgrade(invokeId, resolver=gateway)
+           validated → swap + notify "upgraded", return
+           declined  → notify "declined", declined = invokeId, fall through to 2
+       ctx cancelled between stages → outcome cancelled, return
   2. fallback: ids = list(ctx); latestCandidate(ids, cur)   # unchanged strictly-newer
-       none → already-latest
-  3. validate candidate (3 attempts, 5s/15s backoffs, ping, no temperature)
+       none, or candidate == declined → already-latest / declined (nothing new to try)
+       else → tryUpgrade(candidate, resolver=fallback)
+  tryUpgrade: validate candidate (3 attempts, 5s/15s backoffs, ping, no temperature)
        ok → swap + notify "upgraded"; else notify "declined"
 ```
+
+Up to two notify events per cycle are possible — a declined gateway candidate followed by an
+upgraded/declined fallback outcome — by design, so both are visible.
 
 ## Components
 
@@ -77,10 +89,26 @@ runOnce:
   disabled (missing env default is fine — the request just fails and falls back; nil is for
   missing NATS conn).
 - `runOnce` orchestrates the two stages and tracks `resolver` (`gateway`/`fallback`) for the
-  summary log line and events.
-- `noteEvent` gains additive `"resolver"` field.
-- `startAutoUpdate` wires `resolve` from the env-resolved subject + NATS conn; logs the
-  gateway subject when enabled, or the reason it is log/scan-only.
+  summary log line and events. A declined gateway candidate falls through to the catalog scan
+  in the same cycle instead of ending it; if the scan's candidate is the same ID already
+  declined, it is not re-validated.
+- `gatewayCandidateOK(id, current parsedModel) error` guards gateway candidates before
+  validation: rejects IDs outside the modern parseable naming and cross-family answers, so an
+  unmanageable or wrong-family gateway answer never reaches the ping-validate/swap path.
+- `tryUpgrade(ctx, cur, cand, resolver string, outcome *string) bool` extracts the
+  validate-with-retries → swap|decline → notify sequence shared by both stages; `runOnce` calls
+  it once per candidate it decides to try.
+- `noteEvent` gains additive `"resolver"` field. Up to two notify events per cycle are now
+  possible (gateway declined + fallback upgraded/declined).
+- `startAutoUpdate` wires `resolve` from the env-resolved subject + NATS conn (via
+  `newGatewayResolve`); logs the gateway subject when enabled, or the reason it is
+  log/scan-only.
+- `hostLookup` interface (`Host(kind string) (any, bool)`) narrows `natsConn`'s parameter to
+  just what it needs, so tests can fake it without implementing the full `node.NodeEnv`;
+  `node.NodeEnv` satisfies it implicitly.
+- `newGatewayResolve(nc, subject, current func() string) func(ctx) (string, error)` extracts
+  the stage-1 resolver closure construction out of `startAutoUpdate` so it is independently
+  testable.
 - `cfg.Model` doc comment updated: configured starting model; gateway is the source of truth
   thereafter.
 
@@ -92,10 +120,16 @@ swap mutex semantics (in-flight requests keep their model), notify plumbing
 
 `runOnce` still never returns an error: every failure keeps the current model until the next
 cycle. Gateway failure modes — env unset (default subject has no responder), timeout, non-200
-reply, empty `invokeId`, malformed JSON — each log one warning and fall back to the scan.
-After a gateway-issued prefix change (`us.` → `global.` or on-demand no-prefix), the next
-cycle's family derivation still works (`parseModelID` accepts all three shapes) and the
-fallback scan compares within the new prefix.
+reply, empty `invokeId`, malformed JSON, an unparseable or cross-family candidate
+(`gatewayCandidateOK`) — each log one warning and fall back to the scan. A gateway candidate
+that IS parseable/same-family but fails ping validation (3 attempts) is also not a dead end: it
+is declined (notified) and the cycle falls through to the catalog scan, so a bad gateway answer
+can never mask an upgrade the scan would otherwise find. If the scan's own candidate is the same
+ID already declined, it is skipped rather than re-validated. After a gateway-issued prefix
+change (`us.` → `global.` or on-demand no-prefix), the next cycle's family derivation still
+works (`parseModelID` accepts all three shapes) and the fallback scan compares within the new
+prefix. Cancellation is checked between stages, and inside `tryUpgrade`'s validation loop, so a
+cancelled cycle cannot be misreported as a completed decline.
 
 ## Deployment / env wiring
 

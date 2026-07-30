@@ -326,21 +326,141 @@ func TestRunOnceGatewayErrorFallsBack(t *testing.T) {
 	}
 }
 
-// TestRunOnceGatewayDecline: gateway candidate that fails validation 3× is
-// declined; current model kept; declined event tagged resolver=gateway.
-func TestRunOnceGatewayDecline(t *testing.T) {
+// TestRunOnceGatewayDeclineFallsBackToScan: a declined gateway candidate must
+// not end the cycle — the catalog scan still runs and, if it finds a
+// (different) strictly-newer candidate, that candidate is validated and
+// swapped in the SAME cycle. Two notify events: declined(gateway) then
+// upgraded(fallback).
+func TestRunOnceGatewayDeclineFallsBackToScan(t *testing.T) {
 	u, model, events, validateCalls, _ := newTestUpdater()
+	u.resolve = func(context.Context) (string, error) { return "us.anthropic.claude-opus-4-9", nil }
+	u.validate = func(_ context.Context, id string) error {
+		*validateCalls++
+		if id == "us.anthropic.claude-opus-4-9" {
+			return errors.New("ValidationException")
+		}
+		return nil
+	}
+	u.runOnce(context.Background())
+
+	if *model != "us.anthropic.claude-opus-4-8" {
+		t.Fatalf("model = %q, want fallback candidate swapped in", *model)
+	}
+	if *validateCalls != 4 {
+		t.Fatalf("validateCalls = %d, want 4 (3 failed for 4-9 + 1 ok for 4-8)", *validateCalls)
+	}
+	if len(*events) != 2 {
+		t.Fatalf("events = %d, want 2: %+v", len(*events), *events)
+	}
+	if ev := (*events)[0]; ev.Event != "declined" || ev.Resolver != "gateway" || ev.To != "us.anthropic.claude-opus-4-9" {
+		t.Fatalf("events[0] = %+v, want declined/gateway/4-9", ev)
+	}
+	if ev := (*events)[1]; ev.Event != "upgraded" || ev.Resolver != "fallback" || ev.To != "us.anthropic.claude-opus-4-8" {
+		t.Fatalf("events[1] = %+v, want upgraded/fallback/4-8", ev)
+	}
+}
+
+// TestRunOnceGatewayDeclineNothingElse: gateway candidate declined and the
+// scan finds nothing new → model unchanged, exactly one declined event
+// (resolver=gateway), summary outcome stays "declined".
+func TestRunOnceGatewayDeclineNothingElse(t *testing.T) {
+	u, model, events, validateCalls, _ := newTestUpdater()
+	u.list = func(context.Context) ([]string, error) {
+		return []string{"us.anthropic.claude-opus-4-7"}, nil // only current: no scan candidate
+	}
 	u.resolve = func(context.Context) (string, error) { return "us.anthropic.claude-opus-4-9", nil }
 	u.validate = func(context.Context, string) error {
 		*validateCalls++
 		return errors.New("ValidationException")
 	}
+	var buf bytes.Buffer
+	u.logger = log.New(&buf, "", 0)
 	u.runOnce(context.Background())
 
 	if *model != "us.anthropic.claude-opus-4-7" || *validateCalls != 3 {
 		t.Fatalf("model=%q validateCalls=%d, want unchanged and 3", *model, *validateCalls)
 	}
 	if len(*events) != 1 || (*events)[0].Event != "declined" || (*events)[0].Resolver != "gateway" {
+		t.Fatalf("unexpected events: %+v", *events)
+	}
+	if !strings.Contains(buf.String(), "outcome=declined") {
+		t.Fatalf("summary log missing outcome=declined:\n%s", buf.String())
+	}
+}
+
+// TestRunOnceGatewayDeclineScanAgrees: the scan's candidate is the same ID the
+// gateway already had declined — it must NOT be re-validated. Exactly 3
+// validate calls total (the gateway attempt), 1 declined event.
+func TestRunOnceGatewayDeclineScanAgrees(t *testing.T) {
+	u, model, events, validateCalls, _ := newTestUpdater()
+	u.resolve = func(context.Context) (string, error) { return "us.anthropic.claude-opus-4-8", nil } // == scan's candidate
+	u.validate = func(context.Context, string) error {
+		*validateCalls++
+		return errors.New("ValidationException")
+	}
+	u.runOnce(context.Background())
+
+	if *model != "us.anthropic.claude-opus-4-7" {
+		t.Fatalf("model = %q, want unchanged", *model)
+	}
+	if *validateCalls != 3 {
+		t.Fatalf("validateCalls = %d, want 3 (scan must not re-validate the declined ID)", *validateCalls)
+	}
+	if len(*events) != 1 || (*events)[0].Event != "declined" || (*events)[0].Resolver != "gateway" {
+		t.Fatalf("unexpected events: %+v", *events)
+	}
+}
+
+// TestRunOnceGatewayCandidateUnparseableFallsBack: a gateway answer outside
+// the modern parseable naming is rejected before validation — falls straight
+// to the scan without ever validating the unparseable ID.
+func TestRunOnceGatewayCandidateUnparseableFallsBack(t *testing.T) {
+	u, model, events, validateCalls, _ := newTestUpdater()
+	validated := []string{}
+	u.resolve = func(context.Context) (string, error) { return "anthropic.claude-3-5-sonnet-20241022-v2:0", nil }
+	u.validate = func(_ context.Context, id string) error {
+		*validateCalls++
+		validated = append(validated, id)
+		return nil
+	}
+	u.runOnce(context.Background())
+
+	if *model != "us.anthropic.claude-opus-4-8" {
+		t.Fatalf("model = %q, want fallback scan candidate swapped in", *model)
+	}
+	for _, id := range validated {
+		if id == "anthropic.claude-3-5-sonnet-20241022-v2:0" {
+			t.Fatalf("unparseable gateway candidate was validated: %v", validated)
+		}
+	}
+	if len(*events) != 1 || (*events)[0].Event != "upgraded" || (*events)[0].Resolver != "fallback" {
+		t.Fatalf("unexpected events: %+v", *events)
+	}
+}
+
+// TestRunOnceGatewayCandidateCrossFamilyFallsBack: a gateway answer in a
+// different model family is rejected before validation — falls straight to
+// the scan without ever validating the cross-family ID.
+func TestRunOnceGatewayCandidateCrossFamilyFallsBack(t *testing.T) {
+	u, model, events, validateCalls, _ := newTestUpdater()
+	validated := []string{}
+	u.resolve = func(context.Context) (string, error) { return "us.anthropic.claude-haiku-4-5", nil }
+	u.validate = func(_ context.Context, id string) error {
+		*validateCalls++
+		validated = append(validated, id)
+		return nil
+	}
+	u.runOnce(context.Background())
+
+	if *model != "us.anthropic.claude-opus-4-8" {
+		t.Fatalf("model = %q, want fallback scan candidate swapped in", *model)
+	}
+	for _, id := range validated {
+		if id == "us.anthropic.claude-haiku-4-5" {
+			t.Fatalf("cross-family gateway candidate was validated: %v", validated)
+		}
+	}
+	if len(*events) != 1 || (*events)[0].Event != "upgraded" || (*events)[0].Resolver != "fallback" {
 		t.Fatalf("unexpected events: %+v", *events)
 	}
 }

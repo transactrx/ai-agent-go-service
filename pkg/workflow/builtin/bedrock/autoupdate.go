@@ -102,6 +102,22 @@ func latestCandidate(ids []string, current parsedModel) (string, bool) {
 	return bestID, bestID != ""
 }
 
+// gatewayCandidateOK rejects gateway answers the updater could not manage
+// afterwards: IDs outside the modern parseable naming (a swap would strand
+// the updater at skipped-unparseable-model until restart) and cross-family
+// answers (following the gateway covers upgrades, rollbacks, and prefix
+// changes — never a silent family switch).
+func gatewayCandidateOK(id string, current parsedModel) error {
+	p, err := parseModelID(id)
+	if err != nil {
+		return err
+	}
+	if p.family != current.family {
+		return fmt.Errorf("ai/bedrock: gateway candidate %q is family %q, current family is %q", id, p.family, current.family)
+	}
+	return nil
+}
+
 // checkHour is the daily check time: 02:00 server-local — after-hours, and
 // leaves room for other midnight batch jobs (spec decision 2).
 const checkHour = 2
@@ -176,57 +192,78 @@ func (u *autoUpdater) runOnce(ctx context.Context) {
 	}
 
 	// Stage 1 — org inferenceGateway, the source of truth. Followed wherever
-	// it points (upgrade, org rollback, or geo-prefix change); every swap is
-	// still gated by validation below. Any failure falls through to stage 2.
-	cand, resolver := "", ""
+	// it points within the family (upgrade, org rollback, geo-prefix change);
+	// every swap is still gated by validation. Any failure — transport error,
+	// rejected candidate, or a candidate that fails validation — falls
+	// through to stage 2 so a bad gateway answer can never mask an upgrade
+	// the catalog scan would find.
+	declined := ""
 	if u.resolve != nil {
 		switch id, rerr := u.resolve(ctx); {
 		case rerr != nil:
 			u.logf("autoupdate: gateway resolve failed (using catalog-scan fallback): %v", rerr)
 		case id == cur:
+			u.logf("autoupdate: gateway confirms current model %s is latest", cur)
 			return // outcome stays "already-latest"
 		default:
-			cand, resolver = id, "gateway"
+			if gerr := gatewayCandidateOK(id, parsed); gerr != nil {
+				u.logf("autoupdate: gateway candidate rejected (using catalog-scan fallback): %v", gerr)
+			} else if u.tryUpgrade(ctx, cur, id, "gateway", &outcome) {
+				return
+			} else if outcome == "cancelled" {
+				return
+			} else {
+				declined = id
+			}
 		}
+	}
+	if ctx.Err() != nil {
+		outcome = "cancelled"
+		return
 	}
 
 	// Stage 2 — Bedrock catalog scan, strictly newer within the same
 	// prefix+family (pre-gateway behavior, unchanged).
-	if cand == "" {
-		ids, lerr := u.list(ctx)
-		if lerr != nil {
-			outcome = "list-failed"
-			u.logf("autoupdate: list inference profiles failed (retry next cycle): %v", lerr)
-			return
-		}
-		c, ok := latestCandidate(ids, parsed)
-		if !ok {
-			return // outcome stays "already-latest"
-		}
-		cand, resolver = c, "fallback"
+	ids, lerr := u.list(ctx)
+	if lerr != nil {
+		outcome = "list-failed"
+		u.logf("autoupdate: list inference profiles failed (retry next cycle): %v", lerr)
+		return
 	}
-	u.logf("autoupdate: found candidate %s (current %s, resolver %s), validating", cand, cur, resolver)
+	cand, ok := latestCandidate(ids, parsed)
+	if !ok || cand == declined {
+		return // nothing new, or the scan agrees with the already-declined candidate
+	}
+	u.tryUpgrade(ctx, cur, cand, "fallback", &outcome)
+}
 
+// tryUpgrade validates cand (ping invocation, 3 attempts) and hot-swaps on
+// success. Returns true only after a validated swap; on decline it emits the
+// "declined" event and returns false so the caller can try another source.
+// Sets *outcome to upgraded/declined/cancelled.
+func (u *autoUpdater) tryUpgrade(ctx context.Context, cur, cand, resolver string, outcome *string) bool {
+	u.logf("autoupdate: found candidate %s (current %s, resolver %s), validating", cand, cur, resolver)
 	var lastErr error
 	for attempt := 1; attempt <= validationAttempts; attempt++ {
 		if ctx.Err() != nil {
-			outcome = "cancelled"
-			return
+			*outcome = "cancelled"
+			return false
 		}
 		if lastErr = u.validate(ctx, cand); lastErr == nil {
 			u.swap(cand)
-			outcome = "upgraded"
+			*outcome = "upgraded"
 			u.logf("autoupdate: upgraded %s -> %s (attempt %d/%d, resolver %s)", cur, cand, attempt, validationAttempts, resolver)
 			u.notify(noteEvent{Event: "upgraded", From: cur, To: cand, Attempts: attempt, Resolver: resolver})
-			return
+			return true
 		}
 		u.logf("autoupdate: validation %d/%d of %s failed: %v", attempt, validationAttempts, cand, lastErr)
 		if attempt < validationAttempts {
 			u.sleep(ctx, validationBackoffs[attempt-1])
 		}
 	}
-	outcome = "declined"
+	*outcome = "declined"
 	u.notify(noteEvent{Event: "declined", From: cur, To: cand, Attempts: validationAttempts, Error: lastErr.Error(), Resolver: resolver})
+	return false
 }
 
 // notify stamps identity+timestamp and publishes; falls back to log-only when
