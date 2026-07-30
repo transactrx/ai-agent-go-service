@@ -66,6 +66,7 @@ func TestDeriveGatewayQuery(t *testing.T) {
 // invokeId; error replies surface status + errorMessage; garbage fails.
 func TestParseResolveReply(t *testing.T) {
 	ok := `{"modelId":"anthropic.claude-opus-4-8","invokeId":"us.anthropic.claude-opus-4-8","family":"claude opus"}`
+	whitespaceInvokeID := `{"modelId":"anthropic.claude-opus-4-8","invokeId":" us.anthropic.claude-opus-4-8 "}`
 	cases := []struct {
 		name, status, body, want, wantErrPart string
 	}{
@@ -74,6 +75,11 @@ func TestParseResolveReply(t *testing.T) {
 		{name: "error status", status: "400", body: `{"status":400,"errorMessage":"no invocable model matches"}`, wantErrPart: "400"},
 		{name: "empty invokeId", status: "200", body: `{"modelId":"anthropic.claude-opus-4-8"}`, wantErrPart: "invokeId"},
 		{name: "not json", status: "200", body: `Server Error`, wantErrPart: "JSON"},
+		{name: "invokeId trimmed", status: "200", body: whitespaceInvokeID, want: "us.anthropic.claude-opus-4-8"},
+		{name: "invokeId whitespace-only treated as empty", status: "200", body: `{"invokeId":"   "}`, wantErrPart: "invokeId"},
+		{name: "status too short is not numeric-valid", status: "2", body: ok, wantErrPart: "2"},
+		{name: "status out of range (too large)", status: "20000", body: ok, wantErrPart: "20000"},
+		{name: "status 204 is success", status: "204", body: ok, want: "us.anthropic.claude-opus-4-8"},
 	}
 	for _, c := range cases {
 		got, err := parseResolveReply(c.status, []byte(c.body))

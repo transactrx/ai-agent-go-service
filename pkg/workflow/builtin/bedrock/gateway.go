@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,20 +59,26 @@ type resolveReply struct {
 }
 
 // parseResolveReply extracts the invokeId from a resolveModel reply. status
-// is the nats-service STATUS header value; empty is treated as success.
+// is the nats-service STATUS header value; empty is treated as success, else
+// it must parse as a strict 2xx numeric code (200-299) — anything else
+// (non-numeric, or numeric but outside 2xx) is an error, even if it happens
+// to start with the digit "2" (e.g. "2" or "20000").
 func parseResolveReply(status string, body []byte) (string, error) {
 	var r resolveReply
 	jsonErr := json.Unmarshal(body, &r)
-	if status != "" && !strings.HasPrefix(status, "2") {
-		return "", fmt.Errorf("gateway status %s: %s", status, errText(r.ErrorMessage, body))
+	if status != "" {
+		if n, err := strconv.Atoi(status); err != nil || n < 200 || n > 299 {
+			return "", fmt.Errorf("gateway status %s: %s", status, errText(r.ErrorMessage, body))
+		}
 	}
 	if jsonErr != nil {
 		return "", fmt.Errorf("gateway reply not JSON: %w", jsonErr)
 	}
-	if r.InvokeID == "" {
+	invokeID := strings.TrimSpace(r.InvokeID)
+	if invokeID == "" {
 		return "", fmt.Errorf("gateway reply has no invokeId: %s", errText("", body))
 	}
-	return r.InvokeID, nil
+	return invokeID, nil
 }
 
 // errText prefers the structured errorMessage, else the (truncated) raw body.
