@@ -238,7 +238,7 @@ func (u *autoUpdater) runOnce(ctx context.Context) {
 	u.tryUpgrade(ctx, cur, cand, "fallback", &outcome)
 }
 
-// tryUpgrade validates cand (ping invocation, 3 attempts) and hot-swaps on
+// tryUpgrade validates cand (tool-use probe invocation, 3 attempts) and hot-swaps on
 // success. Returns true only after a validated swap; on decline it emits the
 // "declined" event and returns false so the caller can try another source.
 // Sets *outcome to upgraded/declined/cancelled.
