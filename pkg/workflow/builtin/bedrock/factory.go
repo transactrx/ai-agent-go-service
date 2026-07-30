@@ -68,7 +68,8 @@ type bedrockLLM struct {
 	wfID   string
 
 	// model is the current effective model ID. cfg.Model is the configured
-	// floor; the auto-updater may swap model to a newer validated one.
+	// starting model; the auto-updater (gateway-first, catalog-scan fallback)
+	// may swap model to a different validated release.
 	modelMu sync.RWMutex
 	model   string
 

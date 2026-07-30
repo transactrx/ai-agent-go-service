@@ -22,6 +22,7 @@ import (
 	awsbedrock "github.com/aws/aws-sdk-go-v2/service/bedrock"
 	cptypes "github.com/aws/aws-sdk-go-v2/service/bedrock/types"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
+	"github.com/nats-io/nats.go"
 	nats_service "github.com/transactrx/nats-service/pkg/nats-service"
 
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/engine/safego"
@@ -285,6 +286,25 @@ func (b *bedrockLLM) startAutoUpdate(env node.NodeEnv, awsCfg aws.Config) {
 	if publish == nil {
 		b.logger.Printf("ai/bedrock wf=%s node=%s autoupdate: NATS notifications disabled (log-only): %s", b.wfID, b.nodeID, disabledReason)
 	}
+
+	// Gateway resolution: primary source for the daily check. Missing NATS
+	// conn → nil resolve → catalog scan only (pre-gateway behavior). The
+	// lab/family query is derived from the CURRENT model on every call, so it
+	// stays correct across gateway-issued prefix changes.
+	var resolve func(ctx context.Context) (string, error)
+	gwSubject := gatewaySubject()
+	if nc := natsConn(env); nc == nil {
+		b.logger.Printf("ai/bedrock wf=%s node=%s autoupdate: gateway resolution off (no NATS connection) — catalog scan only", b.wfID, b.nodeID)
+	} else {
+		resolve = func(ctx context.Context) (string, error) {
+			lab, family, derr := deriveGatewayQuery(b.currentModel())
+			if derr != nil {
+				return "", derr
+			}
+			return resolveViaGateway(ctx, nc, gwSubject, lab, family)
+		}
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	b.cancelUpdater = cancel
 
@@ -294,6 +314,7 @@ func (b *bedrockLLM) startAutoUpdate(env node.NodeEnv, awsCfg aws.Config) {
 		logger:  b.logger,
 		current: b.currentModel,
 		swap:    b.setModel,
+		resolve: resolve,
 		list: func(ctx context.Context) ([]string, error) {
 			return listActiveProfileIDs(ctx, cp)
 		},
@@ -309,7 +330,7 @@ func (b *bedrockLLM) startAutoUpdate(env node.NodeEnv, awsCfg aws.Config) {
 			return nil
 		})
 	}()
-	b.logger.Printf("ai/bedrock wf=%s node=%s autoupdate: enabled (model=%s subject=%s)", b.wfID, b.nodeID, b.currentModel(), subject)
+	b.logger.Printf("ai/bedrock wf=%s node=%s autoupdate: enabled (model=%s gateway=%s subject=%s)", b.wfID, b.nodeID, b.currentModel(), gwSubject, subject)
 }
 
 // resolveNotify resolves the notification subject and publisher from env vars
@@ -336,6 +357,20 @@ func resolveNotify(env node.NodeEnv) (subject string, publish func(string, []byt
 		return subject, nil, "nats host wrong type or no connection"
 	}
 	return subject, ns.GetNatsService().Publish, ""
+}
+
+// natsConn returns the shared NATS connection from the hosts map, or nil
+// when the host is missing, mistyped, or not connected.
+func natsConn(env node.NodeEnv) *nats.Conn {
+	host, ok := env.Host("nats")
+	if !ok {
+		return nil
+	}
+	ns, ok := host.(*nats_service.NatService)
+	if !ok {
+		return nil
+	}
+	return ns.GetNatsService()
 }
 
 // listActiveProfileIDs pages through SYSTEM_DEFINED inference profiles and

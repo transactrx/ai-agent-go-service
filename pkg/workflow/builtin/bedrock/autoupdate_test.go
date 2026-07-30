@@ -313,7 +313,9 @@ func TestRunOnceGatewayAlreadyLatest(t *testing.T) {
 // error reply) degrades to the catalog scan; event tagged resolver=fallback.
 func TestRunOnceGatewayErrorFallsBack(t *testing.T) {
 	u, model, events, _, _ := newTestUpdater()
-	u.resolve = func(context.Context) (string, error) { return "", errors.New("nats: no responders available for request") }
+	u.resolve = func(context.Context) (string, error) {
+		return "", errors.New("nats: no responders available for request")
+	}
 	u.runOnce(context.Background())
 
 	if *model != "us.anthropic.claude-opus-4-8" {
