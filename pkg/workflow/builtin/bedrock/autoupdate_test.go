@@ -9,6 +9,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nats-io/nats.go"
+	nats_service "github.com/transactrx/nats-service/pkg/nats-service"
+	nats_service_common "github.com/transactrx/nats-service/pkg/nats-service-common"
 )
 
 // TestParseModelID covers Bedrock inference-profile and foundation-model ID
@@ -179,6 +183,7 @@ func newTestUpdater() (*autoUpdater, *string, *[]noteEvent, *int, *int) {
 		nodeID:  "bedrock1",
 		current: func() string { return model },
 		swap:    func(m string) { model = m },
+		resolve: nil, // nil = legacy path (gateway disabled)
 		list: func(context.Context) ([]string, error) {
 			return []string{"us.anthropic.claude-opus-4-8"}, nil
 		},
@@ -220,7 +225,8 @@ func TestRunOnceUpgrade(t *testing.T) {
 	ev := (*events)[0]
 	if ev.Event != "upgraded" || ev.From != "us.anthropic.claude-opus-4-7" ||
 		ev.To != "us.anthropic.claude-opus-4-8" || ev.Attempts != 2 ||
-		ev.WorkflowID != "powerlineSearch" || ev.NodeID != "bedrock1" || ev.Timestamp == "" {
+		ev.WorkflowID != "powerlineSearch" || ev.NodeID != "bedrock1" || ev.Timestamp == "" ||
+		ev.Resolver != "fallback" {
 		t.Fatalf("unexpected event: %+v", ev)
 	}
 	if *sleeps != 1 {
@@ -248,8 +254,218 @@ func TestRunOnceDecline(t *testing.T) {
 		t.Fatalf("events = %d, want 1", len(*events))
 	}
 	ev := (*events)[0]
-	if ev.Event != "declined" || ev.Attempts != 3 || ev.Error == "" || ev.To != "us.anthropic.claude-opus-4-8" {
+	if ev.Event != "declined" || ev.Attempts != 3 || ev.Error == "" || ev.To != "us.anthropic.claude-opus-4-8" ||
+		ev.Resolver != "fallback" {
 		t.Fatalf("unexpected event: %+v", ev)
+	}
+}
+
+// TestRunOnceGatewayUpgrade: gateway answer differs → validated and swapped
+// without consulting the catalog scan; event tagged resolver=gateway.
+func TestRunOnceGatewayUpgrade(t *testing.T) {
+	u, model, events, validateCalls, _ := newTestUpdater()
+	listCalls := 0
+	u.list = func(context.Context) ([]string, error) { listCalls++; return nil, nil }
+	u.resolve = func(context.Context) (string, error) { return "us.anthropic.claude-opus-4-9", nil }
+	u.runOnce(context.Background())
+
+	if *model != "us.anthropic.claude-opus-4-9" {
+		t.Fatalf("model = %q, want gateway answer", *model)
+	}
+	if listCalls != 0 {
+		t.Fatalf("listCalls = %d, want 0 (gateway short-circuits the scan)", listCalls)
+	}
+	if *validateCalls != 1 {
+		t.Fatalf("validateCalls = %d, want 1", *validateCalls)
+	}
+	if len(*events) != 1 || (*events)[0].Event != "upgraded" || (*events)[0].Resolver != "gateway" {
+		t.Fatalf("unexpected events: %+v", *events)
+	}
+}
+
+// TestRunOnceGatewayFollowsRollback: the gateway is followed even to an OLDER
+// release (org rollback) — the strictly-newer rule applies only to the scan.
+func TestRunOnceGatewayFollowsRollback(t *testing.T) {
+	u, model, events, _, _ := newTestUpdater()
+	u.resolve = func(context.Context) (string, error) { return "us.anthropic.claude-opus-4-5", nil }
+	u.runOnce(context.Background())
+
+	if *model != "us.anthropic.claude-opus-4-5" {
+		t.Fatalf("model = %q, want rollback followed", *model)
+	}
+	if len(*events) != 1 || (*events)[0].Resolver != "gateway" {
+		t.Fatalf("unexpected events: %+v", *events)
+	}
+}
+
+// TestRunOnceGatewayAlreadyLatest: gateway answer == current → full no-op,
+// scan not consulted.
+func TestRunOnceGatewayAlreadyLatest(t *testing.T) {
+	u, model, events, validateCalls, _ := newTestUpdater()
+	listCalls := 0
+	u.list = func(context.Context) ([]string, error) { listCalls++; return nil, nil }
+	u.resolve = func(context.Context) (string, error) { return "us.anthropic.claude-opus-4-7", nil }
+	u.runOnce(context.Background())
+
+	if *model != "us.anthropic.claude-opus-4-7" || *validateCalls != 0 || len(*events) != 0 || listCalls != 0 {
+		t.Fatalf("model=%q validateCalls=%d events=%d listCalls=%d — expected full no-op",
+			*model, *validateCalls, len(*events), listCalls)
+	}
+}
+
+// TestRunOnceGatewayErrorFallsBack: gateway failure (timeout, no responder,
+// error reply) degrades to the catalog scan; event tagged resolver=fallback.
+func TestRunOnceGatewayErrorFallsBack(t *testing.T) {
+	u, model, events, _, _ := newTestUpdater()
+	u.resolve = func(context.Context) (string, error) {
+		return "", errors.New("nats: no responders available for request")
+	}
+	u.runOnce(context.Background())
+
+	if *model != "us.anthropic.claude-opus-4-8" {
+		t.Fatalf("model = %q, want fallback scan result", *model)
+	}
+	if len(*events) != 1 || (*events)[0].Resolver != "fallback" {
+		t.Fatalf("unexpected events: %+v", *events)
+	}
+}
+
+// TestRunOnceGatewayDeclineFallsBackToScan: a declined gateway candidate must
+// not end the cycle — the catalog scan still runs and, if it finds a
+// (different) strictly-newer candidate, that candidate is validated and
+// swapped in the SAME cycle. Two notify events: declined(gateway) then
+// upgraded(fallback).
+func TestRunOnceGatewayDeclineFallsBackToScan(t *testing.T) {
+	u, model, events, validateCalls, _ := newTestUpdater()
+	u.resolve = func(context.Context) (string, error) { return "us.anthropic.claude-opus-4-9", nil }
+	u.validate = func(_ context.Context, id string) error {
+		*validateCalls++
+		if id == "us.anthropic.claude-opus-4-9" {
+			return errors.New("ValidationException")
+		}
+		return nil
+	}
+	u.runOnce(context.Background())
+
+	if *model != "us.anthropic.claude-opus-4-8" {
+		t.Fatalf("model = %q, want fallback candidate swapped in", *model)
+	}
+	if *validateCalls != 4 {
+		t.Fatalf("validateCalls = %d, want 4 (3 failed for 4-9 + 1 ok for 4-8)", *validateCalls)
+	}
+	if len(*events) != 2 {
+		t.Fatalf("events = %d, want 2: %+v", len(*events), *events)
+	}
+	if ev := (*events)[0]; ev.Event != "declined" || ev.Resolver != "gateway" || ev.To != "us.anthropic.claude-opus-4-9" {
+		t.Fatalf("events[0] = %+v, want declined/gateway/4-9", ev)
+	}
+	if ev := (*events)[1]; ev.Event != "upgraded" || ev.Resolver != "fallback" || ev.To != "us.anthropic.claude-opus-4-8" {
+		t.Fatalf("events[1] = %+v, want upgraded/fallback/4-8", ev)
+	}
+}
+
+// TestRunOnceGatewayDeclineNothingElse: gateway candidate declined and the
+// scan finds nothing new → model unchanged, exactly one declined event
+// (resolver=gateway), summary outcome stays "declined".
+func TestRunOnceGatewayDeclineNothingElse(t *testing.T) {
+	u, model, events, validateCalls, _ := newTestUpdater()
+	u.list = func(context.Context) ([]string, error) {
+		return []string{"us.anthropic.claude-opus-4-7"}, nil // only current: no scan candidate
+	}
+	u.resolve = func(context.Context) (string, error) { return "us.anthropic.claude-opus-4-9", nil }
+	u.validate = func(context.Context, string) error {
+		*validateCalls++
+		return errors.New("ValidationException")
+	}
+	var buf bytes.Buffer
+	u.logger = log.New(&buf, "", 0)
+	u.runOnce(context.Background())
+
+	if *model != "us.anthropic.claude-opus-4-7" || *validateCalls != 3 {
+		t.Fatalf("model=%q validateCalls=%d, want unchanged and 3", *model, *validateCalls)
+	}
+	if len(*events) != 1 || (*events)[0].Event != "declined" || (*events)[0].Resolver != "gateway" {
+		t.Fatalf("unexpected events: %+v", *events)
+	}
+	if !strings.Contains(buf.String(), "outcome=declined") {
+		t.Fatalf("summary log missing outcome=declined:\n%s", buf.String())
+	}
+}
+
+// TestRunOnceGatewayDeclineScanAgrees: the scan's candidate is the same ID the
+// gateway already had declined — it must NOT be re-validated. Exactly 3
+// validate calls total (the gateway attempt), 1 declined event.
+func TestRunOnceGatewayDeclineScanAgrees(t *testing.T) {
+	u, model, events, validateCalls, _ := newTestUpdater()
+	u.resolve = func(context.Context) (string, error) { return "us.anthropic.claude-opus-4-8", nil } // == scan's candidate
+	u.validate = func(context.Context, string) error {
+		*validateCalls++
+		return errors.New("ValidationException")
+	}
+	u.runOnce(context.Background())
+
+	if *model != "us.anthropic.claude-opus-4-7" {
+		t.Fatalf("model = %q, want unchanged", *model)
+	}
+	if *validateCalls != 3 {
+		t.Fatalf("validateCalls = %d, want 3 (scan must not re-validate the declined ID)", *validateCalls)
+	}
+	if len(*events) != 1 || (*events)[0].Event != "declined" || (*events)[0].Resolver != "gateway" {
+		t.Fatalf("unexpected events: %+v", *events)
+	}
+}
+
+// TestRunOnceGatewayCandidateUnparseableFallsBack: a gateway answer outside
+// the modern parseable naming is rejected before validation — falls straight
+// to the scan without ever validating the unparseable ID.
+func TestRunOnceGatewayCandidateUnparseableFallsBack(t *testing.T) {
+	u, model, events, validateCalls, _ := newTestUpdater()
+	validated := []string{}
+	u.resolve = func(context.Context) (string, error) { return "anthropic.claude-3-5-sonnet-20241022-v2:0", nil }
+	u.validate = func(_ context.Context, id string) error {
+		*validateCalls++
+		validated = append(validated, id)
+		return nil
+	}
+	u.runOnce(context.Background())
+
+	if *model != "us.anthropic.claude-opus-4-8" {
+		t.Fatalf("model = %q, want fallback scan candidate swapped in", *model)
+	}
+	for _, id := range validated {
+		if id == "anthropic.claude-3-5-sonnet-20241022-v2:0" {
+			t.Fatalf("unparseable gateway candidate was validated: %v", validated)
+		}
+	}
+	if len(*events) != 1 || (*events)[0].Event != "upgraded" || (*events)[0].Resolver != "fallback" {
+		t.Fatalf("unexpected events: %+v", *events)
+	}
+}
+
+// TestRunOnceGatewayCandidateCrossFamilyFallsBack: a gateway answer in a
+// different model family is rejected before validation — falls straight to
+// the scan without ever validating the cross-family ID.
+func TestRunOnceGatewayCandidateCrossFamilyFallsBack(t *testing.T) {
+	u, model, events, validateCalls, _ := newTestUpdater()
+	validated := []string{}
+	u.resolve = func(context.Context) (string, error) { return "us.anthropic.claude-haiku-4-5", nil }
+	u.validate = func(_ context.Context, id string) error {
+		*validateCalls++
+		validated = append(validated, id)
+		return nil
+	}
+	u.runOnce(context.Background())
+
+	if *model != "us.anthropic.claude-opus-4-8" {
+		t.Fatalf("model = %q, want fallback scan candidate swapped in", *model)
+	}
+	for _, id := range validated {
+		if id == "us.anthropic.claude-haiku-4-5" {
+			t.Fatalf("cross-family gateway candidate was validated: %v", validated)
+		}
+	}
+	if len(*events) != 1 || (*events)[0].Event != "upgraded" || (*events)[0].Resolver != "fallback" {
+		t.Fatalf("unexpected events: %+v", *events)
 	}
 }
 
@@ -398,4 +614,116 @@ func TestRunOnceAlwaysLogsSummary(t *testing.T) {
 			}
 		})
 	}
+}
+
+// fakeHostLookup is a minimal hostLookup for TestNatsConn — no need for the
+// full node.NodeEnv surface.
+type fakeHostLookup map[string]any
+
+func (f fakeHostLookup) Host(kind string) (any, bool) {
+	v, ok := f[kind]
+	return v, ok
+}
+
+// TestNatsConn covers the three natsConn outcomes: missing host, host of the
+// wrong type, and a real *nats_service.NatService yielding a live conn.
+// hostLookup narrows the parameter so this doesn't need a full node.NodeEnv.
+func TestNatsConn(t *testing.T) {
+	t.Run("missing nats host", func(t *testing.T) {
+		if got := natsConn(fakeHostLookup{}); got != nil {
+			t.Fatalf("natsConn = %v, want nil", got)
+		}
+	})
+
+	t.Run("host of wrong type", func(t *testing.T) {
+		if got := natsConn(fakeHostLookup{"nats": "not-a-nat-service"}); got != nil {
+			t.Fatalf("natsConn = %v, want nil", got)
+		}
+	})
+
+	t.Run("real NatService", func(t *testing.T) {
+		srv, _ := runEmbeddedNATS(t)
+		ns, err := nats_service.NewLowLevel("trx.test.agent", "q", srv.ClientURL(), "", "", 2048, 300*1024)
+		if err != nil {
+			t.Fatalf("NewLowLevel: %v", err)
+		}
+		// Deliberately not closing ns's connection: nats-service's
+		// ClosedHandler calls os.Exit(-1) on any connection close (including
+		// a shutting-down embedded server), which would kill the whole test
+		// binary. The embedded server's own t.Cleanup (registered by
+		// runEmbeddedNATS) tearing down the process is enough for this test.
+
+		got := natsConn(fakeHostLookup{"nats": ns})
+		if got == nil {
+			t.Fatal("natsConn = nil, want a live conn")
+		}
+	})
+}
+
+// TestNewGatewayResolveEndToEnd exercises the resolver newGatewayResolve
+// builds: it derives lab/family from current() on every call, then hits the
+// gateway over a real NATS request/reply.
+func TestNewGatewayResolveEndToEnd(t *testing.T) {
+	t.Run("round trip", func(t *testing.T) {
+		_, nc := runEmbeddedNATS(t)
+		const subject = "trx.test.gatewayresolve"
+
+		var sawFamily string
+		sub, err := nc.Subscribe(subject, func(m *nats.Msg) {
+			var req map[string]string
+			if err := json.Unmarshal(m.Data, &req); err != nil {
+				t.Errorf("responder: bad request body: %v", err)
+				return
+			}
+			sawFamily = req["family"]
+			reply := &nats.Msg{
+				Subject: m.Reply,
+				Header:  nats.Header{nats_service_common.STATUS: []string{"200"}},
+				Data:    []byte(`{"modelId":"anthropic.claude-opus-4-8","invokeId":"us.anthropic.claude-opus-4-8"}`),
+			}
+			if err := m.RespondMsg(reply); err != nil {
+				t.Errorf("responder: RespondMsg: %v", err)
+			}
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer sub.Unsubscribe()
+
+		resolve := newGatewayResolve(nc, subject, func() string { return "us.anthropic.claude-opus-4-7" })
+		got, err := resolve(context.Background())
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if got != "us.anthropic.claude-opus-4-8" {
+			t.Fatalf("resolve = %q, want %q", got, "us.anthropic.claude-opus-4-8")
+		}
+		if sawFamily != "claude-opus" {
+			t.Fatalf("responder saw family %q, want %q", sawFamily, "claude-opus")
+		}
+	})
+
+	t.Run("unparseable current skips the request", func(t *testing.T) {
+		_, nc := runEmbeddedNATS(t)
+		const subject = "trx.test.gatewayresolve.unparseable"
+
+		hit := false
+		sub, err := nc.Subscribe(subject, func(m *nats.Msg) {
+			hit = true
+			_ = m.Respond(nil)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer sub.Unsubscribe()
+
+		resolve := newGatewayResolve(nc, subject, func() string { return "anthropic.claude-3-5-sonnet-20241022-v2:0" })
+		_, err = resolve(context.Background())
+		if err == nil {
+			t.Fatal("resolve: expected error for unparseable current model")
+		}
+		if hit {
+			t.Fatal("responder was hit despite unparseable current model")
+		}
+	})
 }

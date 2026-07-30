@@ -1,7 +1,10 @@
-// Auto-update: discovers newer Claude models of the same family via the
-// Bedrock control plane, validates candidates with a real test invocation
-// (production payload shape, 3 attempts), and hot-swaps the node's model in
-// memory. Spec: docs/superpowers/specs/2026-06-05-bedrock-model-autoupdate-design.md
+// Auto-update: resolves the latest Claude model of the same family — primary
+// source is the org inferenceGateway (NATS resolveModel, see gateway.go),
+// fallback is a Bedrock control-plane scan — validates candidates with a real
+// test invocation (production payload shape, 3 attempts), and hot-swaps the
+// node's model in memory. Specs:
+// docs/superpowers/specs/2026-06-05-bedrock-model-autoupdate-design.md
+// docs/superpowers/specs/2026-07-30-bedrock-gateway-model-resolution-design.md
 package bedrock
 
 import (
@@ -19,6 +22,7 @@ import (
 	awsbedrock "github.com/aws/aws-sdk-go-v2/service/bedrock"
 	cptypes "github.com/aws/aws-sdk-go-v2/service/bedrock/types"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
+	"github.com/nats-io/nats.go"
 	nats_service "github.com/transactrx/nats-service/pkg/nats-service"
 
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/engine/safego"
@@ -98,6 +102,22 @@ func latestCandidate(ids []string, current parsedModel) (string, bool) {
 	return bestID, bestID != ""
 }
 
+// gatewayCandidateOK rejects gateway answers the updater could not manage
+// afterwards: IDs outside the modern parseable naming (a swap would strand
+// the updater at skipped-unparseable-model until restart) and cross-family
+// answers (following the gateway covers upgrades, rollbacks, and prefix
+// changes — never a silent family switch).
+func gatewayCandidateOK(id string, current parsedModel) error {
+	p, err := parseModelID(id)
+	if err != nil {
+		return err
+	}
+	if p.family != current.family {
+		return fmt.Errorf("ai/bedrock: gateway candidate %q is family %q, current family is %q", id, p.family, current.family)
+	}
+	return nil
+}
+
 // checkHour is the daily check time: 02:00 server-local — after-hours, and
 // leaves room for other midnight batch jobs (spec decision 2).
 const checkHour = 2
@@ -126,7 +146,10 @@ type noteEvent struct {
 	To         string `json:"to"`
 	Attempts   int    `json:"attempts"`
 	Error      string `json:"error,omitempty"`
-	Timestamp  string `json:"timestamp"`
+	// Resolver says which source produced the candidate: "gateway" (org
+	// inferenceGateway) or "fallback" (Bedrock catalog scan).
+	Resolver  string `json:"resolver,omitempty"`
+	Timestamp string `json:"timestamp"`
 }
 
 // autoUpdater runs the daily check. All effects are injected func fields so
@@ -138,7 +161,8 @@ type autoUpdater struct {
 
 	current  func() string                                   // effective model getter
 	swap     func(string)                                    // effective model setter
-	list     func(ctx context.Context) ([]string, error)     // ACTIVE system inference-profile IDs
+	resolve  func(ctx context.Context) (string, error)       // gateway resolveModel; nil → catalog scan only
+	list     func(ctx context.Context) ([]string, error)     // ACTIVE system inference-profile IDs (fallback)
 	validate func(ctx context.Context, modelID string) error // test invocation
 	publish  func(subject string, data []byte) error         // nil → log-only
 	subject  string
@@ -166,38 +190,80 @@ func (u *autoUpdater) runOnce(ctx context.Context) {
 		u.logf("autoupdate: skipped: %v", err)
 		return
 	}
-	ids, err := u.list(ctx)
-	if err != nil {
+
+	// Stage 1 — org inferenceGateway, the source of truth. Followed wherever
+	// it points within the family (upgrade, org rollback, geo-prefix change);
+	// every swap is still gated by validation. Any failure — transport error,
+	// rejected candidate, or a candidate that fails validation — falls
+	// through to stage 2 so a bad gateway answer can never mask an upgrade
+	// the catalog scan would find.
+	declined := ""
+	if u.resolve != nil {
+		switch id, rerr := u.resolve(ctx); {
+		case rerr != nil:
+			u.logf("autoupdate: gateway resolve failed (using catalog-scan fallback): %v", rerr)
+		case id == cur:
+			u.logf("autoupdate: gateway confirms current model %s is latest", cur)
+			return // outcome stays "already-latest"
+		default:
+			if gerr := gatewayCandidateOK(id, parsed); gerr != nil {
+				u.logf("autoupdate: gateway candidate rejected (using catalog-scan fallback): %v", gerr)
+			} else if u.tryUpgrade(ctx, cur, id, "gateway", &outcome) {
+				return
+			} else if outcome == "cancelled" {
+				return
+			} else {
+				declined = id
+			}
+		}
+	}
+	if ctx.Err() != nil {
+		outcome = "cancelled"
+		return
+	}
+
+	// Stage 2 — Bedrock catalog scan, strictly newer within the same
+	// prefix+family (pre-gateway behavior, unchanged).
+	ids, lerr := u.list(ctx)
+	if lerr != nil {
 		outcome = "list-failed"
-		u.logf("autoupdate: list inference profiles failed (retry next cycle): %v", err)
+		u.logf("autoupdate: list inference profiles failed (retry next cycle): %v", lerr)
 		return
 	}
 	cand, ok := latestCandidate(ids, parsed)
-	if !ok {
-		return // outcome stays "already-latest"
+	if !ok || cand == declined {
+		return // nothing new, or the scan agrees with the already-declined candidate
 	}
-	u.logf("autoupdate: found candidate %s (current %s), validating", cand, cur)
+	u.tryUpgrade(ctx, cur, cand, "fallback", &outcome)
+}
 
+// tryUpgrade validates cand (ping invocation, 3 attempts) and hot-swaps on
+// success. Returns true only after a validated swap; on decline it emits the
+// "declined" event and returns false so the caller can try another source.
+// Sets *outcome to upgraded/declined/cancelled.
+func (u *autoUpdater) tryUpgrade(ctx context.Context, cur, cand, resolver string, outcome *string) bool {
+	u.logf("autoupdate: found candidate %s (current %s, resolver %s), validating", cand, cur, resolver)
 	var lastErr error
 	for attempt := 1; attempt <= validationAttempts; attempt++ {
 		if ctx.Err() != nil {
-			outcome = "cancelled"
-			return
+			*outcome = "cancelled"
+			return false
 		}
 		if lastErr = u.validate(ctx, cand); lastErr == nil {
 			u.swap(cand)
-			outcome = "upgraded"
-			u.logf("autoupdate: upgraded %s -> %s (attempt %d/%d)", cur, cand, attempt, validationAttempts)
-			u.notify(noteEvent{Event: "upgraded", From: cur, To: cand, Attempts: attempt})
-			return
+			*outcome = "upgraded"
+			u.logf("autoupdate: upgraded %s -> %s (attempt %d/%d, resolver %s)", cur, cand, attempt, validationAttempts, resolver)
+			u.notify(noteEvent{Event: "upgraded", From: cur, To: cand, Attempts: attempt, Resolver: resolver})
+			return true
 		}
 		u.logf("autoupdate: validation %d/%d of %s failed: %v", attempt, validationAttempts, cand, lastErr)
 		if attempt < validationAttempts {
 			u.sleep(ctx, validationBackoffs[attempt-1])
 		}
 	}
-	outcome = "declined"
-	u.notify(noteEvent{Event: "declined", From: cur, To: cand, Attempts: validationAttempts, Error: lastErr.Error()})
+	*outcome = "declined"
+	u.notify(noteEvent{Event: "declined", From: cur, To: cand, Attempts: validationAttempts, Error: lastErr.Error(), Resolver: resolver})
+	return false
 }
 
 // notify stamps identity+timestamp and publishes; falls back to log-only when
@@ -257,6 +323,19 @@ func (b *bedrockLLM) startAutoUpdate(env node.NodeEnv, awsCfg aws.Config) {
 	if publish == nil {
 		b.logger.Printf("ai/bedrock wf=%s node=%s autoupdate: NATS notifications disabled (log-only): %s", b.wfID, b.nodeID, disabledReason)
 	}
+
+	// Gateway resolution: primary source for the daily check. Missing NATS
+	// conn → nil resolve → catalog scan only (pre-gateway behavior). The
+	// lab/family query is derived from the CURRENT model on every call, so it
+	// stays correct across gateway-issued prefix changes.
+	var resolve func(ctx context.Context) (string, error)
+	gwSubject := gatewaySubject()
+	if nc := natsConn(env); nc == nil {
+		b.logger.Printf("ai/bedrock wf=%s node=%s autoupdate: gateway resolution off (no NATS connection) — catalog scan only", b.wfID, b.nodeID)
+	} else {
+		resolve = newGatewayResolve(nc, gwSubject, b.currentModel)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	b.cancelUpdater = cancel
 
@@ -266,6 +345,7 @@ func (b *bedrockLLM) startAutoUpdate(env node.NodeEnv, awsCfg aws.Config) {
 		logger:  b.logger,
 		current: b.currentModel,
 		swap:    b.setModel,
+		resolve: resolve,
 		list: func(ctx context.Context) ([]string, error) {
 			return listActiveProfileIDs(ctx, cp)
 		},
@@ -281,7 +361,7 @@ func (b *bedrockLLM) startAutoUpdate(env node.NodeEnv, awsCfg aws.Config) {
 			return nil
 		})
 	}()
-	b.logger.Printf("ai/bedrock wf=%s node=%s autoupdate: enabled (model=%s subject=%s)", b.wfID, b.nodeID, b.currentModel(), subject)
+	b.logger.Printf("ai/bedrock wf=%s node=%s autoupdate: enabled (model=%s gateway=%s subject=%s)", b.wfID, b.nodeID, b.currentModel(), gwSubject, subject)
 }
 
 // resolveNotify resolves the notification subject and publisher from env vars
@@ -308,6 +388,38 @@ func resolveNotify(env node.NodeEnv) (subject string, publish func(string, []byt
 		return subject, nil, "nats host wrong type or no connection"
 	}
 	return subject, ns.GetNatsService().Publish, ""
+}
+
+// hostLookup is the slice of node.NodeEnv that natsConn needs; narrowed so
+// tests can fake it without implementing the full interface.
+type hostLookup interface {
+	Host(kind string) (any, bool)
+}
+
+// natsConn returns the shared NATS connection from the hosts map, or nil
+// when the host is missing, mistyped, or not connected.
+func natsConn(env hostLookup) *nats.Conn {
+	host, ok := env.Host("nats")
+	if !ok {
+		return nil
+	}
+	ns, ok := host.(*nats_service.NatService)
+	if !ok {
+		return nil
+	}
+	return ns.GetNatsService()
+}
+
+// newGatewayResolve builds the stage-1 resolver: derives lab/family from the
+// CURRENT model on every call, then asks the gateway.
+func newGatewayResolve(nc *nats.Conn, subject string, current func() string) func(ctx context.Context) (string, error) {
+	return func(ctx context.Context) (string, error) {
+		lab, family, err := deriveGatewayQuery(current())
+		if err != nil {
+			return "", err
+		}
+		return resolveViaGateway(ctx, nc, subject, lab, family)
+	}
 }
 
 // listActiveProfileIDs pages through SYSTEM_DEFINED inference profiles and
