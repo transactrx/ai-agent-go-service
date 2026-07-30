@@ -1,8 +1,16 @@
 package bedrock
 
 import (
+	"context"
+	"encoding/json"
 	"strings"
 	"testing"
+	"time"
+
+	natsserver "github.com/nats-io/nats-server/v2/server"
+	natstest "github.com/nats-io/nats-server/v2/test"
+	"github.com/nats-io/nats.go"
+	nats_service_common "github.com/transactrx/nats-service/pkg/nats-service-common"
 )
 
 // TestGatewaySubject: env override wins (trimmed); default is the generic
@@ -79,4 +87,102 @@ func TestParseResolveReply(t *testing.T) {
 			t.Errorf("%s: got %q, %v; want %q", c.name, got, err, c.want)
 		}
 	}
+}
+
+// runEmbeddedNATS starts an in-process NATS server for resolveViaGateway
+// integration tests (pattern: pkg/transport/natsstream/stream_test.go).
+func runEmbeddedNATS(t *testing.T) (*natsserver.Server, *nats.Conn) {
+	t.Helper()
+	opts := natstest.DefaultTestOptions
+	opts.Port = -1
+	srv := natstest.RunServer(&opts)
+	t.Cleanup(srv.Shutdown)
+	nc, err := nats.Connect(srv.ClientURL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(nc.Close)
+	return srv, nc
+}
+
+// TestResolveViaGatewayIntegration exercises resolveViaGateway end-to-end
+// against an in-process NATS server, with a fake resolveModel responder
+// standing in for the gateway.
+func TestResolveViaGatewayIntegration(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		_, nc := runEmbeddedNATS(t)
+		const subject = "trx.test.resolveModel"
+
+		sub, err := nc.Subscribe(subject, func(m *nats.Msg) {
+			var req map[string]string
+			if err := json.Unmarshal(m.Data, &req); err != nil {
+				t.Errorf("responder: bad request body: %v", err)
+				return
+			}
+			if req["lab"] != "anthropic" || req["family"] != "claude-opus" {
+				t.Errorf("responder: request body = %v, want lab=anthropic family=claude-opus", req)
+			}
+			reply := &nats.Msg{
+				Subject: m.Reply,
+				Header:  nats.Header{nats_service_common.STATUS: []string{"200"}},
+				Data:    []byte(`{"modelId":"anthropic.claude-opus-4-8","invokeId":"us.anthropic.claude-opus-4-8"}`),
+			}
+			if err := m.RespondMsg(reply); err != nil {
+				t.Errorf("responder: RespondMsg: %v", err)
+			}
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer sub.Unsubscribe()
+
+		got, err := resolveViaGateway(context.Background(), nc, subject, "anthropic", "claude-opus")
+		if err != nil {
+			t.Fatalf("resolveViaGateway: %v", err)
+		}
+		if got != "us.anthropic.claude-opus-4-8" {
+			t.Fatalf("resolveViaGateway = %q, want %q", got, "us.anthropic.claude-opus-4-8")
+		}
+	})
+
+	t.Run("error reply", func(t *testing.T) {
+		_, nc := runEmbeddedNATS(t)
+		const subject = "trx.test.resolveModel.error"
+
+		sub, err := nc.Subscribe(subject, func(m *nats.Msg) {
+			reply := &nats.Msg{
+				Subject: m.Reply,
+				Header:  nats.Header{nats_service_common.STATUS: []string{"400"}},
+				Data:    []byte(`{"status":400,"errorMessage":"no invocable model matches"}`),
+			}
+			if err := m.RespondMsg(reply); err != nil {
+				t.Errorf("responder: RespondMsg: %v", err)
+			}
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer sub.Unsubscribe()
+
+		_, err = resolveViaGateway(context.Background(), nc, subject, "anthropic", "claude-opus")
+		if err == nil {
+			t.Fatal("resolveViaGateway: expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "400") || !strings.Contains(err.Error(), "no invocable model matches") {
+			t.Fatalf("resolveViaGateway error = %v, want containing %q and %q", err, "400", "no invocable model matches")
+		}
+	})
+
+	t.Run("no responder", func(t *testing.T) {
+		_, nc := runEmbeddedNATS(t)
+		const subject = "trx.test.resolveModel.noresponder"
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		_, err := resolveViaGateway(ctx, nc, subject, "anthropic", "claude-opus")
+		if err == nil {
+			t.Fatal("resolveViaGateway: expected error, got nil")
+		}
+	})
 }
