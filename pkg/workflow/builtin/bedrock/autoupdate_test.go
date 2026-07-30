@@ -9,6 +9,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nats-io/nats.go"
+	nats_service "github.com/transactrx/nats-service/pkg/nats-service"
+	nats_service_common "github.com/transactrx/nats-service/pkg/nats-service-common"
 )
 
 // TestParseModelID covers Bedrock inference-profile and foundation-model ID
@@ -610,4 +614,116 @@ func TestRunOnceAlwaysLogsSummary(t *testing.T) {
 			}
 		})
 	}
+}
+
+// fakeHostLookup is a minimal hostLookup for TestNatsConn — no need for the
+// full node.NodeEnv surface.
+type fakeHostLookup map[string]any
+
+func (f fakeHostLookup) Host(kind string) (any, bool) {
+	v, ok := f[kind]
+	return v, ok
+}
+
+// TestNatsConn covers the three natsConn outcomes: missing host, host of the
+// wrong type, and a real *nats_service.NatService yielding a live conn.
+// hostLookup narrows the parameter so this doesn't need a full node.NodeEnv.
+func TestNatsConn(t *testing.T) {
+	t.Run("missing nats host", func(t *testing.T) {
+		if got := natsConn(fakeHostLookup{}); got != nil {
+			t.Fatalf("natsConn = %v, want nil", got)
+		}
+	})
+
+	t.Run("host of wrong type", func(t *testing.T) {
+		if got := natsConn(fakeHostLookup{"nats": "not-a-nat-service"}); got != nil {
+			t.Fatalf("natsConn = %v, want nil", got)
+		}
+	})
+
+	t.Run("real NatService", func(t *testing.T) {
+		srv, _ := runEmbeddedNATS(t)
+		ns, err := nats_service.NewLowLevel("trx.test.agent", "q", srv.ClientURL(), "", "", 2048, 300*1024)
+		if err != nil {
+			t.Fatalf("NewLowLevel: %v", err)
+		}
+		// Deliberately not closing ns's connection: nats-service's
+		// ClosedHandler calls os.Exit(-1) on any connection close (including
+		// a shutting-down embedded server), which would kill the whole test
+		// binary. The embedded server's own t.Cleanup (registered by
+		// runEmbeddedNATS) tearing down the process is enough for this test.
+
+		got := natsConn(fakeHostLookup{"nats": ns})
+		if got == nil {
+			t.Fatal("natsConn = nil, want a live conn")
+		}
+	})
+}
+
+// TestNewGatewayResolveEndToEnd exercises the resolver newGatewayResolve
+// builds: it derives lab/family from current() on every call, then hits the
+// gateway over a real NATS request/reply.
+func TestNewGatewayResolveEndToEnd(t *testing.T) {
+	t.Run("round trip", func(t *testing.T) {
+		_, nc := runEmbeddedNATS(t)
+		const subject = "trx.test.gatewayresolve"
+
+		var sawFamily string
+		sub, err := nc.Subscribe(subject, func(m *nats.Msg) {
+			var req map[string]string
+			if err := json.Unmarshal(m.Data, &req); err != nil {
+				t.Errorf("responder: bad request body: %v", err)
+				return
+			}
+			sawFamily = req["family"]
+			reply := &nats.Msg{
+				Subject: m.Reply,
+				Header:  nats.Header{nats_service_common.STATUS: []string{"200"}},
+				Data:    []byte(`{"modelId":"anthropic.claude-opus-4-8","invokeId":"us.anthropic.claude-opus-4-8"}`),
+			}
+			if err := m.RespondMsg(reply); err != nil {
+				t.Errorf("responder: RespondMsg: %v", err)
+			}
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer sub.Unsubscribe()
+
+		resolve := newGatewayResolve(nc, subject, func() string { return "us.anthropic.claude-opus-4-7" })
+		got, err := resolve(context.Background())
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if got != "us.anthropic.claude-opus-4-8" {
+			t.Fatalf("resolve = %q, want %q", got, "us.anthropic.claude-opus-4-8")
+		}
+		if sawFamily != "claude-opus" {
+			t.Fatalf("responder saw family %q, want %q", sawFamily, "claude-opus")
+		}
+	})
+
+	t.Run("unparseable current skips the request", func(t *testing.T) {
+		_, nc := runEmbeddedNATS(t)
+		const subject = "trx.test.gatewayresolve.unparseable"
+
+		hit := false
+		sub, err := nc.Subscribe(subject, func(m *nats.Msg) {
+			hit = true
+			_ = m.Respond(nil)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer sub.Unsubscribe()
+
+		resolve := newGatewayResolve(nc, subject, func() string { return "anthropic.claude-3-5-sonnet-20241022-v2:0" })
+		_, err = resolve(context.Background())
+		if err == nil {
+			t.Fatal("resolve: expected error for unparseable current model")
+		}
+		if hit {
+			t.Fatal("responder was hit despite unparseable current model")
+		}
+	})
 }

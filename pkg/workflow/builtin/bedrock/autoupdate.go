@@ -333,13 +333,7 @@ func (b *bedrockLLM) startAutoUpdate(env node.NodeEnv, awsCfg aws.Config) {
 	if nc := natsConn(env); nc == nil {
 		b.logger.Printf("ai/bedrock wf=%s node=%s autoupdate: gateway resolution off (no NATS connection) — catalog scan only", b.wfID, b.nodeID)
 	} else {
-		resolve = func(ctx context.Context) (string, error) {
-			lab, family, derr := deriveGatewayQuery(b.currentModel())
-			if derr != nil {
-				return "", derr
-			}
-			return resolveViaGateway(ctx, nc, gwSubject, lab, family)
-		}
+		resolve = newGatewayResolve(nc, gwSubject, b.currentModel)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -396,9 +390,15 @@ func resolveNotify(env node.NodeEnv) (subject string, publish func(string, []byt
 	return subject, ns.GetNatsService().Publish, ""
 }
 
+// hostLookup is the slice of node.NodeEnv that natsConn needs; narrowed so
+// tests can fake it without implementing the full interface.
+type hostLookup interface {
+	Host(kind string) (any, bool)
+}
+
 // natsConn returns the shared NATS connection from the hosts map, or nil
 // when the host is missing, mistyped, or not connected.
-func natsConn(env node.NodeEnv) *nats.Conn {
+func natsConn(env hostLookup) *nats.Conn {
 	host, ok := env.Host("nats")
 	if !ok {
 		return nil
@@ -408,6 +408,18 @@ func natsConn(env node.NodeEnv) *nats.Conn {
 		return nil
 	}
 	return ns.GetNatsService()
+}
+
+// newGatewayResolve builds the stage-1 resolver: derives lab/family from the
+// CURRENT model on every call, then asks the gateway.
+func newGatewayResolve(nc *nats.Conn, subject string, current func() string) func(ctx context.Context) (string, error) {
+	return func(ctx context.Context) (string, error) {
+		lab, family, err := deriveGatewayQuery(current())
+		if err != nil {
+			return "", err
+		}
+		return resolveViaGateway(ctx, nc, subject, lab, family)
+	}
 }
 
 // listActiveProfileIDs pages through SYSTEM_DEFINED inference profiles and
