@@ -179,6 +179,7 @@ func newTestUpdater() (*autoUpdater, *string, *[]noteEvent, *int, *int) {
 		nodeID:  "bedrock1",
 		current: func() string { return model },
 		swap:    func(m string) { model = m },
+		resolve: nil, // nil = legacy path (gateway disabled)
 		list: func(context.Context) ([]string, error) {
 			return []string{"us.anthropic.claude-opus-4-8"}, nil
 		},
@@ -220,7 +221,8 @@ func TestRunOnceUpgrade(t *testing.T) {
 	ev := (*events)[0]
 	if ev.Event != "upgraded" || ev.From != "us.anthropic.claude-opus-4-7" ||
 		ev.To != "us.anthropic.claude-opus-4-8" || ev.Attempts != 2 ||
-		ev.WorkflowID != "powerlineSearch" || ev.NodeID != "bedrock1" || ev.Timestamp == "" {
+		ev.WorkflowID != "powerlineSearch" || ev.NodeID != "bedrock1" || ev.Timestamp == "" ||
+		ev.Resolver != "fallback" {
 		t.Fatalf("unexpected event: %+v", ev)
 	}
 	if *sleeps != 1 {
@@ -248,8 +250,96 @@ func TestRunOnceDecline(t *testing.T) {
 		t.Fatalf("events = %d, want 1", len(*events))
 	}
 	ev := (*events)[0]
-	if ev.Event != "declined" || ev.Attempts != 3 || ev.Error == "" || ev.To != "us.anthropic.claude-opus-4-8" {
+	if ev.Event != "declined" || ev.Attempts != 3 || ev.Error == "" || ev.To != "us.anthropic.claude-opus-4-8" ||
+		ev.Resolver != "fallback" {
 		t.Fatalf("unexpected event: %+v", ev)
+	}
+}
+
+// TestRunOnceGatewayUpgrade: gateway answer differs → validated and swapped
+// without consulting the catalog scan; event tagged resolver=gateway.
+func TestRunOnceGatewayUpgrade(t *testing.T) {
+	u, model, events, validateCalls, _ := newTestUpdater()
+	listCalls := 0
+	u.list = func(context.Context) ([]string, error) { listCalls++; return nil, nil }
+	u.resolve = func(context.Context) (string, error) { return "us.anthropic.claude-opus-4-9", nil }
+	u.runOnce(context.Background())
+
+	if *model != "us.anthropic.claude-opus-4-9" {
+		t.Fatalf("model = %q, want gateway answer", *model)
+	}
+	if listCalls != 0 {
+		t.Fatalf("listCalls = %d, want 0 (gateway short-circuits the scan)", listCalls)
+	}
+	if *validateCalls != 1 {
+		t.Fatalf("validateCalls = %d, want 1", *validateCalls)
+	}
+	if len(*events) != 1 || (*events)[0].Event != "upgraded" || (*events)[0].Resolver != "gateway" {
+		t.Fatalf("unexpected events: %+v", *events)
+	}
+}
+
+// TestRunOnceGatewayFollowsRollback: the gateway is followed even to an OLDER
+// release (org rollback) — the strictly-newer rule applies only to the scan.
+func TestRunOnceGatewayFollowsRollback(t *testing.T) {
+	u, model, events, _, _ := newTestUpdater()
+	u.resolve = func(context.Context) (string, error) { return "us.anthropic.claude-opus-4-5", nil }
+	u.runOnce(context.Background())
+
+	if *model != "us.anthropic.claude-opus-4-5" {
+		t.Fatalf("model = %q, want rollback followed", *model)
+	}
+	if len(*events) != 1 || (*events)[0].Resolver != "gateway" {
+		t.Fatalf("unexpected events: %+v", *events)
+	}
+}
+
+// TestRunOnceGatewayAlreadyLatest: gateway answer == current → full no-op,
+// scan not consulted.
+func TestRunOnceGatewayAlreadyLatest(t *testing.T) {
+	u, model, events, validateCalls, _ := newTestUpdater()
+	listCalls := 0
+	u.list = func(context.Context) ([]string, error) { listCalls++; return nil, nil }
+	u.resolve = func(context.Context) (string, error) { return "us.anthropic.claude-opus-4-7", nil }
+	u.runOnce(context.Background())
+
+	if *model != "us.anthropic.claude-opus-4-7" || *validateCalls != 0 || len(*events) != 0 || listCalls != 0 {
+		t.Fatalf("model=%q validateCalls=%d events=%d listCalls=%d — expected full no-op",
+			*model, *validateCalls, len(*events), listCalls)
+	}
+}
+
+// TestRunOnceGatewayErrorFallsBack: gateway failure (timeout, no responder,
+// error reply) degrades to the catalog scan; event tagged resolver=fallback.
+func TestRunOnceGatewayErrorFallsBack(t *testing.T) {
+	u, model, events, _, _ := newTestUpdater()
+	u.resolve = func(context.Context) (string, error) { return "", errors.New("nats: no responders available for request") }
+	u.runOnce(context.Background())
+
+	if *model != "us.anthropic.claude-opus-4-8" {
+		t.Fatalf("model = %q, want fallback scan result", *model)
+	}
+	if len(*events) != 1 || (*events)[0].Resolver != "fallback" {
+		t.Fatalf("unexpected events: %+v", *events)
+	}
+}
+
+// TestRunOnceGatewayDecline: gateway candidate that fails validation 3× is
+// declined; current model kept; declined event tagged resolver=gateway.
+func TestRunOnceGatewayDecline(t *testing.T) {
+	u, model, events, validateCalls, _ := newTestUpdater()
+	u.resolve = func(context.Context) (string, error) { return "us.anthropic.claude-opus-4-9", nil }
+	u.validate = func(context.Context, string) error {
+		*validateCalls++
+		return errors.New("ValidationException")
+	}
+	u.runOnce(context.Background())
+
+	if *model != "us.anthropic.claude-opus-4-7" || *validateCalls != 3 {
+		t.Fatalf("model=%q validateCalls=%d, want unchanged and 3", *model, *validateCalls)
+	}
+	if len(*events) != 1 || (*events)[0].Event != "declined" || (*events)[0].Resolver != "gateway" {
+		t.Fatalf("unexpected events: %+v", *events)
 	}
 }
 

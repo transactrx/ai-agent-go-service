@@ -1,7 +1,10 @@
-// Auto-update: discovers newer Claude models of the same family via the
-// Bedrock control plane, validates candidates with a real test invocation
-// (production payload shape, 3 attempts), and hot-swaps the node's model in
-// memory. Spec: docs/superpowers/specs/2026-06-05-bedrock-model-autoupdate-design.md
+// Auto-update: resolves the latest Claude model of the same family — primary
+// source is the org inferenceGateway (NATS resolveModel, see gateway.go),
+// fallback is a Bedrock control-plane scan — validates candidates with a real
+// test invocation (production payload shape, 3 attempts), and hot-swaps the
+// node's model in memory. Specs:
+// docs/superpowers/specs/2026-06-05-bedrock-model-autoupdate-design.md
+// docs/superpowers/specs/2026-07-30-bedrock-gateway-model-resolution-design.md
 package bedrock
 
 import (
@@ -126,7 +129,10 @@ type noteEvent struct {
 	To         string `json:"to"`
 	Attempts   int    `json:"attempts"`
 	Error      string `json:"error,omitempty"`
-	Timestamp  string `json:"timestamp"`
+	// Resolver says which source produced the candidate: "gateway" (org
+	// inferenceGateway) or "fallback" (Bedrock catalog scan).
+	Resolver  string `json:"resolver,omitempty"`
+	Timestamp string `json:"timestamp"`
 }
 
 // autoUpdater runs the daily check. All effects are injected func fields so
@@ -138,7 +144,8 @@ type autoUpdater struct {
 
 	current  func() string                                   // effective model getter
 	swap     func(string)                                    // effective model setter
-	list     func(ctx context.Context) ([]string, error)     // ACTIVE system inference-profile IDs
+	resolve  func(ctx context.Context) (string, error)       // gateway resolveModel; nil → catalog scan only
+	list     func(ctx context.Context) ([]string, error)     // ACTIVE system inference-profile IDs (fallback)
 	validate func(ctx context.Context, modelID string) error // test invocation
 	publish  func(subject string, data []byte) error         // nil → log-only
 	subject  string
@@ -166,17 +173,38 @@ func (u *autoUpdater) runOnce(ctx context.Context) {
 		u.logf("autoupdate: skipped: %v", err)
 		return
 	}
-	ids, err := u.list(ctx)
-	if err != nil {
-		outcome = "list-failed"
-		u.logf("autoupdate: list inference profiles failed (retry next cycle): %v", err)
-		return
+
+	// Stage 1 — org inferenceGateway, the source of truth. Followed wherever
+	// it points (upgrade, org rollback, or geo-prefix change); every swap is
+	// still gated by validation below. Any failure falls through to stage 2.
+	cand, resolver := "", ""
+	if u.resolve != nil {
+		switch id, rerr := u.resolve(ctx); {
+		case rerr != nil:
+			u.logf("autoupdate: gateway resolve failed (using catalog-scan fallback): %v", rerr)
+		case id == cur:
+			return // outcome stays "already-latest"
+		default:
+			cand, resolver = id, "gateway"
+		}
 	}
-	cand, ok := latestCandidate(ids, parsed)
-	if !ok {
-		return // outcome stays "already-latest"
+
+	// Stage 2 — Bedrock catalog scan, strictly newer within the same
+	// prefix+family (pre-gateway behavior, unchanged).
+	if cand == "" {
+		ids, lerr := u.list(ctx)
+		if lerr != nil {
+			outcome = "list-failed"
+			u.logf("autoupdate: list inference profiles failed (retry next cycle): %v", lerr)
+			return
+		}
+		c, ok := latestCandidate(ids, parsed)
+		if !ok {
+			return // outcome stays "already-latest"
+		}
+		cand, resolver = c, "fallback"
 	}
-	u.logf("autoupdate: found candidate %s (current %s), validating", cand, cur)
+	u.logf("autoupdate: found candidate %s (current %s, resolver %s), validating", cand, cur, resolver)
 
 	var lastErr error
 	for attempt := 1; attempt <= validationAttempts; attempt++ {
@@ -187,8 +215,8 @@ func (u *autoUpdater) runOnce(ctx context.Context) {
 		if lastErr = u.validate(ctx, cand); lastErr == nil {
 			u.swap(cand)
 			outcome = "upgraded"
-			u.logf("autoupdate: upgraded %s -> %s (attempt %d/%d)", cur, cand, attempt, validationAttempts)
-			u.notify(noteEvent{Event: "upgraded", From: cur, To: cand, Attempts: attempt})
+			u.logf("autoupdate: upgraded %s -> %s (attempt %d/%d, resolver %s)", cur, cand, attempt, validationAttempts, resolver)
+			u.notify(noteEvent{Event: "upgraded", From: cur, To: cand, Attempts: attempt, Resolver: resolver})
 			return
 		}
 		u.logf("autoupdate: validation %d/%d of %s failed: %v", attempt, validationAttempts, cand, lastErr)
@@ -197,7 +225,7 @@ func (u *autoUpdater) runOnce(ctx context.Context) {
 		}
 	}
 	outcome = "declined"
-	u.notify(noteEvent{Event: "declined", From: cur, To: cand, Attempts: validationAttempts, Error: lastErr.Error()})
+	u.notify(noteEvent{Event: "declined", From: cur, To: cand, Attempts: validationAttempts, Error: lastErr.Error(), Resolver: resolver})
 }
 
 // notify stamps identity+timestamp and publishes; falls back to log-only when
