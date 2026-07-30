@@ -13,6 +13,8 @@ import (
 	"github.com/nats-io/nats.go"
 	nats_service "github.com/transactrx/nats-service/pkg/nats-service"
 	nats_service_common "github.com/transactrx/nats-service/pkg/nats-service-common"
+
+	"github.com/transactrx/ai-agent-go-service/pkg/workflow/node"
 )
 
 // TestParseModelID covers Bedrock inference-profile and foundation-model ID
@@ -613,6 +615,119 @@ func TestRunOnceAlwaysLogsSummary(t *testing.T) {
 				t.Fatalf("summary log missing %q + %q in:\n%s", sc.wantOutcome, sc.wantModel, out)
 			}
 		})
+	}
+}
+
+// TestVerifyToolProbe covers the probe's pass/fail criteria over decoded
+// LLMEvent sequences: a completed tool_use block named probeToolName with
+// valid non-empty JSON input is the only passing shape.
+func TestVerifyToolProbe(t *testing.T) {
+	cases := []struct {
+		name    string
+		events  []node.LLMEvent
+		wantErr string // substring; "" means nil error
+	}{
+		{
+			name: "valid echo tool_use stop",
+			events: []node.LLMEvent{
+				{Kind: node.LLMToolUseStop, ToolUse: &node.LLMToolUse{Name: "echo", InputJSON: json.RawMessage(`{"value":"pong"}`)}},
+			},
+			wantErr: "",
+		},
+		{
+			name: "wrong tool name",
+			events: []node.LLMEvent{
+				{Kind: node.LLMToolUseStop, ToolUse: &node.LLMToolUse{Name: "notecho", InputJSON: json.RawMessage(`{"value":"pong"}`)}},
+			},
+			wantErr: "notecho",
+		},
+		{
+			name: "empty input JSON",
+			events: []node.LLMEvent{
+				{Kind: node.LLMToolUseStop, ToolUse: &node.LLMToolUse{Name: "echo", InputJSON: json.RawMessage(``)}},
+			},
+			wantErr: "not valid JSON",
+		},
+		{
+			name: "invalid input JSON",
+			events: []node.LLMEvent{
+				{Kind: node.LLMToolUseStop, ToolUse: &node.LLMToolUse{Name: "echo", InputJSON: json.RawMessage(`{"value":`)}},
+			},
+			wantErr: "not valid JSON",
+		},
+		{
+			name: "text only, no tool_use",
+			events: []node.LLMEvent{
+				{Kind: node.LLMTextDelta, Delta: "hi"},
+				{Kind: node.LLMMessageStop, Stop: "end_turn"},
+			},
+			wantErr: "tool_use",
+		},
+		{
+			name: "start/delta but no stop — incomplete block never verified",
+			events: []node.LLMEvent{
+				{Kind: node.LLMToolUseStart, ToolUse: &node.LLMToolUse{Name: "echo"}},
+				{Kind: node.LLMToolUseDelta, ToolUse: &node.LLMToolUse{Name: "echo", InputJSON: json.RawMessage(`{"value":"pong"}`)}},
+			},
+			wantErr: "tool_use",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := verifyToolProbe(c.events)
+			if c.wantErr == "" {
+				if err != nil {
+					t.Fatalf("verifyToolProbe: unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("verifyToolProbe: expected error containing %q, got nil", c.wantErr)
+			}
+			if !strings.Contains(err.Error(), c.wantErr) {
+				t.Fatalf("verifyToolProbe error = %q, want substring %q", err.Error(), c.wantErr)
+			}
+		})
+	}
+}
+
+// TestProbeDecodeRoundTrip proves the probe's pass criterion is satisfiable by
+// the exact production decoder: a realistic synthetic Anthropic chunk
+// sequence (tool_use content_block_start → two input_json_delta chunks →
+// content_block_stop → message_delta stop_reason=tool_use) fed through
+// handleAnthropicChunk — the same function production streaming uses — then
+// verified by verifyToolProbe.
+func TestProbeDecodeRoundTrip(t *testing.T) {
+	chunks := []string{
+		`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"echo","input":{}}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"value\":"}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"pong\"}"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"tool_use"}}`,
+	}
+
+	out := make(chan node.LLMEvent, 64)
+	var events []node.LLMEvent
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range out {
+			events = append(events, ev)
+		}
+	}()
+
+	accum := map[int]*node.LLMToolUse{}
+	ctx := context.Background()
+	for _, c := range chunks {
+		if err := handleAnthropicChunk(ctx, []byte(c), accum, out); err != nil {
+			t.Fatalf("handleAnthropicChunk: %v", err)
+		}
+	}
+	close(out)
+	<-done
+
+	if err := verifyToolProbe(events); err != nil {
+		t.Fatalf("verifyToolProbe: %v", err)
 	}
 }
 

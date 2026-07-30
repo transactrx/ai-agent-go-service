@@ -55,14 +55,19 @@ func buildAnthropicPayload(req node.LLMRequest, cfg Config) ([]byte, error) {
 		Description string          `json:"description"`
 		InputSchema json.RawMessage `json:"input_schema"`
 	}
+	type toolChoice struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+	}
 	type envelope struct {
-		AnthropicVersion string    `json:"anthropic_version"`
-		MaxTokens        int       `json:"max_tokens"`
-		Temperature      *float64  `json:"temperature,omitempty"`
-		System           string    `json:"system,omitempty"`
-		Messages         []message `json:"messages"`
-		Tools            []tool    `json:"tools,omitempty"`
-		StopSequences    []string  `json:"stop_sequences,omitempty"`
+		AnthropicVersion string      `json:"anthropic_version"`
+		MaxTokens        int         `json:"max_tokens"`
+		Temperature      *float64    `json:"temperature,omitempty"`
+		System           string      `json:"system,omitempty"`
+		Messages         []message   `json:"messages"`
+		Tools            []tool      `json:"tools,omitempty"`
+		ToolChoice       *toolChoice `json:"tool_choice,omitempty"`
+		StopSequences    []string    `json:"stop_sequences,omitempty"`
 	}
 
 	maxTok := cfg.MaxTokens
@@ -131,6 +136,9 @@ func buildAnthropicPayload(req node.LLMRequest, cfg Config) ([]byte, error) {
 	}
 	for _, ts := range req.Tools {
 		env.Tools = append(env.Tools, tool{Name: ts.Name, Description: ts.Description, InputSchema: ts.InputSchema})
+	}
+	if req.ToolChoiceName != "" {
+		env.ToolChoice = &toolChoice{Type: "tool", Name: req.ToolChoiceName}
 	}
 	return json.Marshal(env)
 }

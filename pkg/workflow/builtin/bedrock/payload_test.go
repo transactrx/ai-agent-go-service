@@ -144,6 +144,47 @@ func TestBuildPayloadIncludesTools(t *testing.T) {
 	}
 }
 
+// TestBuildAnthropicPayloadToolChoice: ToolChoiceName set → tool_choice
+// {"type":"tool","name":...} present; unset → tool_choice key absent
+// (production regression guard — must be byte-identical to today).
+func TestBuildAnthropicPayloadToolChoice(t *testing.T) {
+	cfg := Config{Model: "us.anthropic.claude-opus-4-7", MaxTokens: 128, AnthropicVersion: "bedrock-2023-05-31"}
+	base := node.LLMRequest{
+		Messages: []node.Message{{Role: node.UserMsg, Content: []node.ContentBlock{{Type: node.BlockText, Text: "ping"}}}},
+	}
+
+	t.Run("set", func(t *testing.T) {
+		req := base
+		req.ToolChoiceName = "echo"
+		body, err := buildAnthropicPayload(req, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Fatal(err)
+		}
+		tc, ok := got["tool_choice"].(map[string]any)
+		if !ok {
+			t.Fatalf("tool_choice missing or wrong type: %v", got["tool_choice"])
+		}
+		if tc["type"] != "tool" || tc["name"] != "echo" {
+			t.Fatalf("tool_choice = %v, want {type:tool name:echo}", tc)
+		}
+	})
+
+	t.Run("unset", func(t *testing.T) {
+		req := base
+		body, err := buildAnthropicPayload(req, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(body), "tool_choice") {
+			t.Fatalf("payload must not contain tool_choice when ToolChoiceName is empty: %s", body)
+		}
+	})
+}
+
 func TestBuildPayloadAssistantToolUseAndUserToolResult(t *testing.T) {
 	cfg := Config{Model: "x", MaxTokens: 100, AnthropicVersion: "bedrock-2023-05-31"}
 	req := node.LLMRequest{

@@ -20,6 +20,12 @@ type LLMRequest struct {
 	MaxTokens   int
 	Temperature *float64
 	Stop        []string
+
+	// ToolChoiceName, when non-empty, forces the model to call this tool
+	// (Anthropic tool_choice {"type":"tool","name":...}). Production agent
+	// requests leave it empty; the bedrock auto-update validation probe is
+	// the only setter.
+	ToolChoiceName string
 }
 
 // LLMEvent is the unit of stream output from a provider. The agent translates
