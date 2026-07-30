@@ -22,6 +22,7 @@ import (
 	awsbedrock "github.com/aws/aws-sdk-go-v2/service/bedrock"
 	cptypes "github.com/aws/aws-sdk-go-v2/service/bedrock/types"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/nats-io/nats.go"
 	nats_service "github.com/transactrx/nats-service/pkg/nats-service"
 
@@ -237,7 +238,7 @@ func (u *autoUpdater) runOnce(ctx context.Context) {
 	u.tryUpgrade(ctx, cur, cand, "fallback", &outcome)
 }
 
-// tryUpgrade validates cand (ping invocation, 3 attempts) and hot-swaps on
+// tryUpgrade validates cand (tool-use probe invocation, 3 attempts) and hot-swaps on
 // success. Returns true only after a validated swap; on decline it emits the
 // "declined" event and returns false so the caller can try another source.
 // Sets *outcome to upgraded/declined/cancelled.
@@ -447,9 +448,15 @@ func listActiveProfileIDs(ctx context.Context, client *awsbedrock.Client) ([]str
 	}
 }
 
-// validateModel performs a tiny production-shaped invocation against the
-// candidate: same anthropic_version as the node, "ping" prompt, 16 output
-// tokens. Success = stream completes without error.
+// probeToolName is the tool the validation probe forces the candidate to call.
+const probeToolName = "echo"
+
+// validateModel performs a production-shaped invocation against the
+// candidate: the same payload envelope and stream decoder the agent uses,
+// plus a forced tool call — production workflows are tool-heavy, so a model
+// that streams text but cannot produce a well-formed tool_use block must be
+// declined. Success = stream completes AND a completed tool_use block named
+// probeToolName with valid JSON input was decoded.
 //
 // Temperature is deliberately NOT set: production requests never carry it
 // (the agent leaves LLMRequest.Temperature nil), and newer Claude models
@@ -460,8 +467,14 @@ func (b *bedrockLLM) validateModel(ctx context.Context, modelID string) error {
 	defer cancel()
 
 	req := node.LLMRequest{
-		System:    "Connectivity check. Reply with the single word: pong",
-		MaxTokens: 16,
+		System:         "Connectivity check. Call the echo tool with value \"pong\".",
+		MaxTokens:      128,
+		ToolChoiceName: probeToolName,
+		Tools: []node.ToolSpec{{
+			Name:        probeToolName,
+			Description: "Echoes back the provided value.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"value":{"type":"string"}},"required":["value"]}`),
+		}},
 		Messages: []node.Message{{
 			Role:    node.UserMsg,
 			Content: []node.ContentBlock{{Type: node.BlockText, Text: "ping"}},
@@ -482,10 +495,72 @@ func (b *bedrockLLM) validateModel(ctx context.Context, modelID string) error {
 	}
 	stream := resp.GetStream()
 	defer stream.Close()
-	for range stream.Events() {
-		// drain — content is irrelevant, completion is the signal
+
+	events, err := collectProbeEvents(ctx, stream)
+	if err != nil {
+		return err
 	}
-	return stream.Err()
+	return verifyToolProbe(events)
+}
+
+// collectProbeEvents drains a probe stream through handleAnthropicChunk —
+// the same decoder production streaming uses — and returns the events.
+// Non-chunk stream members are decode failures, exactly as in Stream.
+func collectProbeEvents(ctx context.Context, stream *bedrockruntime.InvokeModelWithResponseStreamEventStream) ([]node.LLMEvent, error) {
+	out := make(chan node.LLMEvent, 64)
+	var events []node.LLMEvent
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for evt := range out {
+			events = append(events, evt)
+		}
+	}()
+
+	accum := map[int]*node.LLMToolUse{}
+	var decodeErr error
+	for evt := range stream.Events() {
+		if ctx.Err() != nil {
+			decodeErr = ctx.Err()
+			break
+		}
+		chunk, ok := evt.(*types.ResponseStreamMemberChunk)
+		if !ok {
+			decodeErr = fmt.Errorf("ai/bedrock: probe stream: unexpected event %T", evt)
+			break
+		}
+		if err := handleAnthropicChunk(ctx, chunk.Value.Bytes, accum, out); err != nil {
+			decodeErr = err
+			break
+		}
+	}
+	close(out)
+	<-done
+	if decodeErr != nil {
+		return nil, decodeErr
+	}
+	if err := stream.Err(); err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
+// verifyToolProbe requires a completed tool_use block for probeToolName with
+// valid, non-empty JSON input among the probe's decoded events.
+func verifyToolProbe(events []node.LLMEvent) error {
+	for _, ev := range events {
+		if ev.Kind != node.LLMToolUseStop || ev.ToolUse == nil {
+			continue
+		}
+		if ev.ToolUse.Name != probeToolName {
+			return fmt.Errorf("ai/bedrock: probe expected tool %q, model called %q", probeToolName, ev.ToolUse.Name)
+		}
+		if len(ev.ToolUse.InputJSON) == 0 || !json.Valid(ev.ToolUse.InputJSON) {
+			return fmt.Errorf("ai/bedrock: probe tool_use input is not valid JSON: %q", string(ev.ToolUse.InputJSON))
+		}
+		return nil
+	}
+	return fmt.Errorf("ai/bedrock: probe stream completed without a tool_use block (model did not honor tool_choice)")
 }
 
 // sleepCtx sleeps for d or until ctx is cancelled.

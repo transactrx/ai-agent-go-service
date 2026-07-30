@@ -22,7 +22,7 @@ a fallback.
    (gateway tokenizer splits dashes; matches catalog family `claude opus`).
 3. **Follow gateway always** — when the gateway's `invokeId` differs from the current model
    (upgrade, org rollback, or geo-prefix change), it becomes the candidate. Every swap is still
-   gated by the existing ping validation. The fallback scan keeps its strictly-newer rule.
+   gated by the existing validation probe. The fallback scan keeps its strictly-newer rule.
 4. **Generic subject default + env override** (repo convention, cf. commit e38389b):
    `INFERENCE_GATEWAY_BASE_PATH`, default `example.inferenceGateway`; request subject is
    `<basePath>.resolveModel`. Org deployments set it to `trx.inferenceGateway`.
@@ -66,7 +66,8 @@ runOnce:
   2. fallback: ids = list(ctx); latestCandidate(ids, cur)   # unchanged strictly-newer
        none, or candidate == declined → already-latest / declined (nothing new to try)
        else → tryUpgrade(candidate, resolver=fallback)
-  tryUpgrade: validate candidate (3 attempts, 5s/15s backoffs, ping, no temperature)
+  tryUpgrade: validate candidate (3 attempts, 5s/15s backoffs, forced tool-use probe,
+              no temperature)
        ok → swap + notify "upgraded"; else notify "declined"
 ```
 
@@ -94,7 +95,17 @@ upgraded/declined fallback outcome — by design, so both are visible.
   declined, it is not re-validated.
 - `gatewayCandidateOK(id, current parsedModel) error` guards gateway candidates before
   validation: rejects IDs outside the modern parseable naming and cross-family answers, so an
-  unmanageable or wrong-family gateway answer never reaches the ping-validate/swap path.
+  unmanageable or wrong-family gateway answer never reaches the validate/swap path.
+- `validateModel` — the pre-swap probe — no longer just proves the candidate streams text.
+  Production workflows are tool-heavy, so the probe now sends a production-shaped request (same
+  `buildAnthropicPayload` envelope and `handleAnthropicChunk` decoder as real traffic) that
+  forces the candidate to call a synthetic `echo` tool via Anthropic `tool_choice`
+  (`{"type":"tool","name":"echo"}`), decoded through the exact same stream handler production
+  uses. Success requires a completed `tool_use` block named `echo` with valid, non-empty JSON
+  input; a missing or malformed `tool_use` block declines the candidate exactly like a stream
+  error does. `node.LLMRequest.ToolChoiceName` is the new field carrying the forced tool name —
+  it is probe-only: production agent requests always leave it empty, and `buildAnthropicPayload`
+  omits the `tool_choice` key entirely when it is empty, so production payloads are unchanged.
 - `tryUpgrade(ctx, cur, cand, resolver string, outcome *string) bool` extracts the
   validate-with-retries → swap|decline → notify sequence shared by both stages; `runOnce` calls
   it once per candidate it decides to try.
@@ -112,9 +123,10 @@ upgraded/declined fallback outcome — by design, so both are visible.
 - `cfg.Model` doc comment updated: configured starting model; gateway is the source of truth
   thereafter.
 
-**Unchanged**: startup + daily 02:00 schedule, ping validation (3 attempts, no temperature),
-swap mutex semantics (in-flight requests keep their model), notify plumbing
-(`MODEL_AUTOUPDATE_NOTIFY_SUBJECT` / `<nats_basePath>.modelAutoUpdate`), `Config` shape.
+**Unchanged**: startup + daily 02:00 schedule, validation attempts/backoffs (3 attempts, no
+temperature), swap mutex semantics (in-flight requests keep their model), notify plumbing
+(`MODEL_AUTOUPDATE_NOTIFY_SUBJECT` / `<nats_basePath>.modelAutoUpdate`), `Config` shape,
+failure semantics (any probe failure → candidate declined, current model kept).
 
 ## Error handling
 
@@ -122,7 +134,7 @@ swap mutex semantics (in-flight requests keep their model), notify plumbing
 cycle. Gateway failure modes — env unset (default subject has no responder), timeout, non-200
 reply, empty `invokeId`, malformed JSON, an unparseable or cross-family candidate
 (`gatewayCandidateOK`) — each log one warning and fall back to the scan. A gateway candidate
-that IS parseable/same-family but fails ping validation (3 attempts) is also not a dead end: it
+that IS parseable/same-family but fails the tool-use validation probe (3 attempts) is also not a dead end: it
 is declined (notified) and the cycle falls through to the catalog scan, so a bad gateway answer
 can never mask an upgrade the scan would otherwise find. If the scan's own candidate is the same
 ID already declined, it is skipped rather than re-validated. After a gateway-issued prefix
