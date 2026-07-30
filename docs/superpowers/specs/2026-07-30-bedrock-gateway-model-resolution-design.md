@@ -104,7 +104,9 @@ This repo ships a library; the consuming project deploys the binary and its envi
 - `docs/DEPLOYMENT.md` env table: add `INFERENCE_GATEWAY_BASE_PATH` (optional, default
   `example.inferenceGateway`, org value `trx.inferenceGateway`) — consuming services set it in
   their terraform task definitions / GitHub environment variables, whichever drives their env.
-- `docker-compose.yml`: local example value for the agent service.
+- `docker-compose.yml`: no change — the compose file only runs NATS + the test
+  suite (no agent service); the placeholder default already makes local runs
+  fall back to the catalog scan.
 - No terraform exists in this repo; nothing to change here beyond docs.
 
 ## Testing

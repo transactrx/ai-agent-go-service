@@ -39,6 +39,8 @@ Read by the library at startup:
 | `S3_FILES_BUCKET` | — | `<app_name>-assistant-files-<environment>` | Bucket for uploaded files/charts; service panics if it can't resolve one |
 | `DYNAMODB_PROMPTS_TABLE` | — | `opensearchaichatapi-assistant-prompts` | Enables the prompt-admin override store; disabled if init fails |
 | `AWS_REGION_DYNAMODB` | — | `us-east-1` | Region for the prompt store |
+| `INFERENCE_GATEWAY_BASE_PATH` | — | `example.inferenceGateway` | Org inferenceGateway NATS base path; `ai/bedrock` auto-update asks `<base>.resolveModel` for the family's latest release (org value: `trx.inferenceGateway`). Unset/unreachable → Bedrock catalog-scan fallback. Set it in the consuming service's deployment env (Terraform task definition or GitHub environment vars). |
+| `MODEL_AUTOUPDATE_NOTIFY_SUBJECT` | — | `<NATS_BASE_PATH>.modelAutoUpdate` | Subject for `ai/bedrock` auto-update upgraded/declined notifications |
 
 **Workflow-referenced vars** are *not* library-core — they are read by the node configs inside your
 workflow JSON via `${VAR}` / `${VAR:default}`. chatApi's `powerlineSearch.json` references, for
