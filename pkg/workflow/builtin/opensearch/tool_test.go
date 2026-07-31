@@ -175,6 +175,37 @@ func TestInvokeAcceptsLegitimatePath(t *testing.T) {
 	}
 }
 
+func TestBuildURLSetsIgnoreUnavailable(t *testing.T) {
+	got := buildURL("https://os.example.com", "prod.cpe-2026-07-30,prod.cpe-2026-07-31")
+	want := "https://os.example.com/prod.cpe-2026-07-30,prod.cpe-2026-07-31/_search?ignore_unavailable=true"
+	if got != want {
+		t.Fatalf("buildURL = %q, want %q", got, want)
+	}
+}
+
+func TestInvokeRequestCarriesIgnoreUnavailable(t *testing.T) {
+	var seenURL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenURL = r.URL.String()
+		_, _ = w.Write([]byte(`{"hits":{"total":{"value":0}}}`))
+	}))
+	defer srv.Close()
+	tool := newToolWithPattern(t, "prod.cpe-*")
+	tool.cfg.Host = srv.URL
+	tool.http = srv.Client()
+	tool.user = secret.New("u")
+	tool.pass = secret.New("p")
+	tool.cfg.MaxResultSize = 500
+	args := json.RawMessage(`{"indexPath":"prod.cpe-2026-07-30,prod.cpe-2026-07-31","queryBody":{}}`)
+	ctx := identity.WithIdentity(context.Background(), identity.Identity{AccountID: "AM-1"})
+	if _, err := tool.Invoke(ctx, args); err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if seenURL != "/prod.cpe-2026-07-30,prod.cpe-2026-07-31/_search?ignore_unavailable=true" {
+		t.Fatalf("server saw URL %q, want ignore_unavailable=true query param", seenURL)
+	}
+}
+
 // newToolWithPattern is a test helper that builds an opensearchTool with a
 // compiled pattern and a permissive stub policy.
 func newToolWithPattern(t *testing.T, pattern string) *opensearchTool {
