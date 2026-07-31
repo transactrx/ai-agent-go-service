@@ -118,13 +118,16 @@ func (t *opensearchTool) Invoke(ctx context.Context, args json.RawMessage) (json
 }
 
 // buildURL composes the cluster URL from host + indexPath. Ensures /_search
-// suffix so the LLM doesn't have to.
+// suffix so the LLM doesn't have to. ignore_unavailable=true makes
+// multi-index queries skip indices that don't exist yet (e.g. today's daily
+// index right after UTC midnight, before first ingestion) instead of
+// failing the whole request with index_not_found.
 func buildURL(host, indexPath string) string {
 	url := strings.TrimRight(host, "/") + "/" + strings.TrimLeft(indexPath, "/")
 	if !strings.HasSuffix(url, "/_search") {
 		url = strings.TrimRight(url, "/") + "/_search"
 	}
-	return url
+	return url + "?ignore_unavailable=true"
 }
 
 // buildFinalQuery merges LLM-supplied bool sub-clauses with server-injected
