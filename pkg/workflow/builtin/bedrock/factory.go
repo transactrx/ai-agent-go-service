@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"strings"
 	"sync"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -37,6 +39,23 @@ const (
 	defaultMaxTokens        = 4096
 	defaultAnthropicVersion = "bedrock-2023-05-31"
 )
+
+// pinEnv pins the model PROCESS-WIDE (every ai/bedrock node) and disables
+// auto-update — the break-glass operator override: no JSON edit, no
+// redeploy. Ported from powerlineAIApi's AI_BEDROCK_MODEL_ID.
+const pinEnv = "AI_BEDROCK_MODEL_ID"
+
+// applyEnvPin returns true when pinEnv is set; the pinned value overrides the
+// workflow JSON model verbatim (trimmed, no format validation — operator-
+// controlled) and the caller must not start the updater.
+func (b *bedrockLLM) applyEnvPin() bool {
+	pin := strings.TrimSpace(os.Getenv(pinEnv))
+	if pin == "" {
+		return false
+	}
+	b.setModel(pin)
+	return true
+}
 
 // Factory builds a bedrock node from rawConfig.
 var Factory node.Factory = node.FactoryFunc(func(rawConfig json.RawMessage) (node.Node, error) {
@@ -155,7 +174,9 @@ func (b *bedrockLLM) Init(ctx context.Context, env node.NodeEnv) error {
 	b.logger = env.Logger()
 	b.nodeID = env.NodeID()
 	b.wfID = env.WorkflowID()
-	if b.cfg.autoUpdateEnabled() {
+	if b.applyEnvPin() {
+		b.logger.Printf("ai/bedrock wf=%s node=%s model pinned to %s via %s — auto-update disabled", b.wfID, b.nodeID, b.currentModel(), pinEnv)
+	} else if b.cfg.autoUpdateEnabled() {
 		b.startAutoUpdate(env, awsCfg)
 	}
 	return nil

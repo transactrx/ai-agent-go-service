@@ -151,6 +151,28 @@ func TestAutoUpdateEnabled(t *testing.T) {
 	}
 }
 
+// TestApplyEnvPin: empty env must not pin; set env pins with trimming,
+// disables updater.
+func TestApplyEnvPin(t *testing.T) {
+	b := &bedrockLLM{cfg: Config{Model: "us.anthropic.claude-opus-4-7"}, model: "us.anthropic.claude-opus-4-7"}
+
+	t.Setenv(pinEnv, "")
+	if b.applyEnvPin() {
+		t.Fatal("empty env must not pin")
+	}
+	if b.currentModel() != "us.anthropic.claude-opus-4-7" {
+		t.Fatalf("model changed on empty pin: %q", b.currentModel())
+	}
+
+	t.Setenv(pinEnv, "  us.anthropic.claude-sonnet-5  ")
+	if !b.applyEnvPin() {
+		t.Fatal("set env must pin")
+	}
+	if b.currentModel() != "us.anthropic.claude-sonnet-5" {
+		t.Fatalf("model = %q, want trimmed pinned value", b.currentModel())
+	}
+}
+
 // TestModelSwapConcurrent exercises currentModel/setModel under the race
 // detector (run with -race). In-flight requests read the model once at start;
 // the updater is the only writer.
