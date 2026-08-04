@@ -39,13 +39,20 @@ Appended to `runOnce` after the resolve/upgrade stage, every cycle — except cy
 
 - Probe `current()` with the existing `validateModel` (3 attempts, 5s/15s).
 - On pass: nothing new logged beyond the existing summary line.
-- On fail:
-  - If this cycle already **declined** a gateway candidate, skip recovery (a re-resolve would return the same declined answer). Log `[ERROR] health check FAILED for current model <id>`.
-  - Else re-resolve via gateway, apply `gatewayCandidateOK`, reject candidates that `sameModel` the broken current, probe the candidate, and on pass swap via **`recoverSwap`** (see §3) — the broken model is never recorded as last-known-good. Outcome `recovered`, log `[WARN] current model <id> failed its health check, recovering` then `model updated from X to Y (resolver=recovery)`.
-  - If recovery is impossible (gateway down, candidate rejected, or probe fails): `[ERROR] health check FAILED for current model <id>`, outcome `health-check-failed`. Existing rule holds: keep the current model, retry next cycle.
+- On fail, the probe error is **classified** first — recovery and alerting are reserved for failures that definitively indict the model:
+  - **Conclusive**: the model is gone or unentitled (AWS `ValidationException` / `ResourceNotFoundException`, i.e. `isModelUnavailable`), or the model responded but violated the probe's tool contract (no/invalid `tool_use` — wrapped as `errProbeContract` by `validateModel`).
+  - **Inconclusive** (everything else: `ThrottlingException`, timeouts, 5xx, transport errors): outcome `health-check-inconclusive`, log `health check inconclusive for current model <id> (transient error, keeping model): <err>`, **no notification, no recovery**, keep the model. A per-model throttle must never move live traffic onto a model the gateway never approved.
+- On a **conclusive** failure:
+  - If this cycle already **declined** a candidate (either resolve stage), skip recovery (a re-resolve would return the same declined answer). Log `health check FAILED for current model <id>: <err>`.
+  - Else re-resolve via gateway, apply `gatewayCandidateOK`, reject candidates that `sameModel` the broken current (or the candidate declined this cycle), probe the candidate, and on pass swap via **`recoverSwap`** (see §3) — the broken model is never recorded as last-known-good. Outcome `recovered`, log `current model <id> failed its health check, recovering` then `model updated from X to Y (resolver=recovery)`.
+  - If recovery is impossible (gateway down, candidate rejected, or probe fails): `health check FAILED for current model <id>: <err>`, outcome `health-check-failed`. When a recovery candidate was probed and also failed, the logged/notified error carries **both** causes (`health check: <healthErr>; recovery candidate <id> also failed: <candErr>`). Existing rule holds: keep the current model, retry next cycle.
 - Recovery resolution is two-stage exactly like the upgrade path: gateway first, catalog scan second (this diverges from powerlineAIApi, which is gateway-only — consistent with keeping our catalog fallback).
+- A conclusively-failed current model stays flagged (`curUnhealthy`) until it is replaced: if a **later** cycle finds an upgrade, that upgrade is promoted with `recoverSwap`, not `swap`, so the broken model can never be recorded as last-known-good after the fact. The flag clears on a passing health check, a successful recovery, or a swap.
+- **Cancellation** (shutdown) is never a verdict: when the context is cancelled during a 3-attempt loop the outcome is `cancelled` and no `declined` / `health-check-failed` notification is emitted.
+- The `declined` guard covers **both** resolve stages — a candidate rejected by the gateway stage *or* by the catalog stage is remembered for the rest of the cycle, so it is not re-probed by the health check's recovery.
+- Model comparisons use `sameModel` (parsed), not string equality: the bare and dated forms of one release (`…claude-opus-4-7` vs `…claude-opus-4-7-20260101-v1:0`) are the same model, so a gateway answer naming the current release ends the cycle `already-latest` instead of being probed as a candidate.
 
-New outcomes added to the summary-line vocabulary: `recovered`, `health-check-failed`.
+New outcomes added to the summary-line vocabulary: `recovered`, `health-check-failed`, `health-check-inconclusive`.
 
 ### 3. Last-known-good fallback at request time
 
@@ -56,7 +63,7 @@ State on `bedrockLLM`, guarded by the existing `modelMu`:
 
 `Stream` change:
 
-- Read `model := b.currentModel()` as today. If the initial `InvokeModelWithResponseStream` **call** returns a model-related error — AWS error codes `ValidationException` or `ResourceNotFoundException` — and `lastKnownGood` is non-empty and differs from `model`, log `[WARN] bedrock: model <cur> failed (<code>), retrying with last-known-good <lkg>` and retry the invoke once with `lastKnownGood`.
+- Read `model := b.currentModel()` as today. If the initial `InvokeModelWithResponseStream` **call** returns a model-related error — AWS error codes `ValidationException` or `ResourceNotFoundException` — and `lastKnownGood` is non-empty and differs from `model`, log `model <cur> failed (<err>), retrying with last-known-good <lkg>` (the full error, not just the code) and retry the invoke once with `lastKnownGood`.
 - The retry applies only before any `LLMEvent` has been emitted (the invoke call itself failing). Mid-stream errors are not retried — streaming semantics unchanged.
 - Errors other than the two listed codes are returned as today (the engine-level retry policy still applies unchanged around `Stream`).
 
@@ -75,6 +82,8 @@ State is in-memory: a container restart clears `lastKnownGood`; the startup run 
 
 `noteEvent` gains two event values: `recovered` (fields as `upgraded`, `resolver:"recovery"`) and `health-check-failed` (`from` = current model, `to` empty, `error` set). Payload shape otherwise unchanged; consumers of `<basePath>.modelAutoUpdate` are backward compatible.
 
+`health-check-failed` fires **only on conclusive** probe failures (§2): an inconclusive failure (throttle, timeout, 5xx) publishes nothing — it is a fault of the moment, not of the model, and alerting on it would train operators to ignore the event. Cancellation (shutdown) likewise publishes nothing.
+
 ## Config / env surface (after)
 
 | Item | Where | Default | Notes |
@@ -89,15 +98,20 @@ Schedule constants (07:00 UTC, 30 min max jitter, 3 probe attempts, 5s/15s backo
 
 ## Error handling summary
 
-Unchanged prime rule: **every failure keeps the current model and retries next cycle; `runOnce` never returns an error.** Recovery is the single exception that swaps away from a failing current model, and only after a successful probe of the replacement. `Stream`'s last-known-good retry is single-shot and never loops.
+Unchanged prime rule: **every failure keeps the current model and retries next cycle; `runOnce` never returns an error.** Recovery is the single exception that swaps away from a failing current model, and only after a **conclusive** probe failure (§2) plus a successful probe of the replacement. `Stream`'s last-known-good retry is single-shot and never loops.
+
+The catalog scan is bounded so a control-plane fault cannot stall the updater for the life of the process: a 60s timeout per scan and a 50-page pagination cap (exceeding it fails the scan → `list-failed`, retry next cycle). If the updater goroutine ever dies, that is logged loudly (`autoupdate: goroutine terminated, auto-update DISABLED for this process`) instead of being silently discarded.
 
 ## Testing
 
 Extend the existing fake-injection tables (`autoupdate_test.go`, `gateway_test.go` untouched):
 
 - `nextRunAt`: UTC anchor cases incl. exactly-07:00 and DST-irrelevance; jitter injected as fixed value.
-- Health check: pass (no-op), fail→recover success, fail→recovery declined (probe fail), fail→gateway down, fail→candidate `sameModel` broken current, fail after same-cycle gateway decline (skip recovery).
-- `recoverSwap` semantics: broken model never stored as last-known-good; clears stale equal value.
+- Health check: pass (no-op), conclusive fail→recover success, fail→recovery declined (probe fail), fail→gateway error falls to catalog scan, fail→candidate `sameModel` broken current, fail after same-cycle decline (skip recovery), **inconclusive fail → no recovery, no event, outcome `health-check-inconclusive`**.
+- Error classification (`healthCheckConclusive`): model-unavailable and tool-contract errors conclusive; throttle/timeout/transport inconclusive.
+- Cancellation during the final validation attempt → outcome `cancelled`, no notification.
+- `recoverSwap` semantics: broken model never stored as last-known-good; clears stale equal value; a later cycle's upgrade after a conclusive failure also promotes via `recoverSwap`.
+- `sameModel` at the gateway-answer comparison: dated form of the current release → `already-latest`, candidate never probed.
 - Env pin: set → no updater started, model overridden, banner logged once; unset → unchanged behavior.
 - `Stream` fallback: `ValidationException` before first event → one retry with lkg; other codes → no retry; lkg empty/equal → no retry; mid-stream error → no retry. Fake bedrock client via the existing seam.
 - Notification: `recovered` / `health-check-failed` payloads.
