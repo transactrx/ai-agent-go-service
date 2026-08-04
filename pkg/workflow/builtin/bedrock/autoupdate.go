@@ -14,6 +14,7 @@ package bedrock
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand"
@@ -166,6 +167,19 @@ const validationAttempts = 3
 // validationBackoffs separate attempts 1→2 and 2→3.
 var validationBackoffs = []time.Duration{5 * time.Second, 15 * time.Second}
 
+// errProbeContract marks probe failures where the model responded but
+// violated the tool contract (no/invalid tool_use) — a definitive indictment
+// of the model, unlike transient invoke faults.
+var errProbeContract = errors.New("probe contract violation")
+
+// healthCheckConclusive reports whether a failed probe definitively indicts
+// the current model: the model is gone/unentitled (isModelUnavailable) or it
+// responded but violated the probe's tool contract. Throttles, timeouts, and
+// 5xx are inconclusive — recovery must never be triggered by them.
+func healthCheckConclusive(err error) bool {
+	return isModelUnavailable(err) || errors.Is(err, errProbeContract)
+}
+
 // noteEvent is the NATS notification payload, published on both outcomes.
 type noteEvent struct {
 	Event      string `json:"event"` // "upgraded" | "declined" | "recovered" | "health-check-failed"
@@ -200,6 +214,12 @@ type autoUpdater struct {
 	now         func() time.Time
 	sleep       func(ctx context.Context, d time.Duration)
 	jitter      func() time.Duration // per-cycle random delay after the anchor; nil → none
+
+	// curUnhealthy records that the current model conclusively failed its last
+	// health check (and recovery was impossible). A later upgrade must then
+	// promote via recoverSwap so the broken model never becomes
+	// last-known-good. Goroutine-confined: only run/runOnce touch it.
+	curUnhealthy bool
 }
 
 // runOnce executes one full cycle: resolve → validate → swap (upgrade
@@ -226,8 +246,9 @@ func (u *autoUpdater) runOnce(ctx context.Context) {
 }
 
 // resolveAndUpgrade is the pre-existing two-stage upgrade path (gateway
-// first, catalog scan fallback). Returns the gateway candidate declined this
-// cycle ("" when none) so recovery can avoid a pointless re-resolve.
+// first, catalog scan fallback). Returns the candidate declined this cycle by
+// EITHER stage ("" when none) so recovery can avoid a pointless re-resolve
+// and the health check can skip a recovery that would only re-probe it.
 func (u *autoUpdater) resolveAndUpgrade(ctx context.Context, outcome *string) (declined string) {
 	cur := u.current()
 	parsed, err := parseModelID(cur)
@@ -247,7 +268,7 @@ func (u *autoUpdater) resolveAndUpgrade(ctx context.Context, outcome *string) (d
 		switch id, rerr := u.resolve(ctx); {
 		case rerr != nil:
 			u.logf("autoupdate: gateway resolve failed (using catalog-scan fallback): %v", rerr)
-		case id == cur:
+		case sameModel(id, cur):
 			u.logf("autoupdate: gateway confirms current model %s is latest", cur)
 			return ""
 		default:
@@ -276,16 +297,23 @@ func (u *autoUpdater) resolveAndUpgrade(ctx context.Context, outcome *string) (d
 		return declined
 	}
 	cand, ok := latestCandidate(ids, parsed)
-	if !ok || cand == declined {
+	if !ok || (declined != "" && sameModel(cand, declined)) {
 		return declined // nothing new, or the scan agrees with the already-declined candidate
 	}
-	u.tryUpgrade(ctx, cur, cand, "fallback", outcome)
+	if !u.tryUpgrade(ctx, cur, cand, "fallback", outcome) && *outcome == "declined" {
+		// A catalog decline counts too: the health check must not spend a
+		// recovery on a candidate this cycle already rejected.
+		declined = cand
+	}
 	return declined
 }
 
 // healthCheck probes the model currently in use (the daily Bedrock-
-// deprecation detector). On failure it attempts a one-shot recovery so a
-// model AWS broke under us is replaced without operator action.
+// deprecation detector). On a CONCLUSIVE failure it attempts a one-shot
+// recovery so a model AWS broke under us is replaced without operator action.
+// Inconclusive failures (throttles, timeouts, 5xx) never trigger recovery and
+// never alert: swapping live traffic on a transient fault would be worse than
+// the fault.
 func (u *autoUpdater) healthCheck(ctx context.Context, declined string, outcome *string) {
 	cur := u.current()
 	var lastErr error
@@ -295,6 +323,7 @@ func (u *autoUpdater) healthCheck(ctx context.Context, declined string, outcome 
 			return
 		}
 		if lastErr = u.validate(ctx, cur); lastErr == nil {
+			u.curUnhealthy = false
 			return // healthy — outcome untouched
 		}
 		u.logf("autoupdate: health check %d/%d of current model %s failed: %v", attempt, validationAttempts, cur, lastErr)
@@ -302,21 +331,31 @@ func (u *autoUpdater) healthCheck(ctx context.Context, declined string, outcome 
 			u.sleep(ctx, validationBackoffs[attempt-1])
 		}
 	}
+	if ctx.Err() != nil {
+		*outcome = "cancelled"
+		return
+	}
+	if !healthCheckConclusive(lastErr) {
+		*outcome = "health-check-inconclusive"
+		u.logf("autoupdate: health check inconclusive for current model %s (transient error, keeping model): %v", cur, lastErr)
+		return
+	}
+	u.curUnhealthy = true
 	if declined != "" {
 		// Re-resolving would return the candidate already declined this
 		// cycle — give up until tomorrow.
 		u.failHealthCheck(cur, lastErr, outcome)
 		return
 	}
-	u.recoverFromFailedHealthCheck(ctx, cur, lastErr, outcome)
+	u.recoverFromFailedHealthCheck(ctx, cur, declined, lastErr, outcome)
 }
 
 // recoverFromFailedHealthCheck re-resolves (gateway first, catalog second),
 // gates the candidate, probes it, and promotes via recoverSwap so the broken
 // model is never recorded as fallback.
-func (u *autoUpdater) recoverFromFailedHealthCheck(ctx context.Context, broken string, healthErr error, outcome *string) {
+func (u *autoUpdater) recoverFromFailedHealthCheck(ctx context.Context, broken, declined string, healthErr error, outcome *string) {
 	u.logf("autoupdate: current model %s failed its health check, recovering", broken)
-	cand := u.recoveryCandidate(ctx, broken)
+	cand := u.recoveryCandidate(ctx, broken, declined)
 	if cand == "" {
 		u.failHealthCheck(broken, healthErr, outcome)
 		return
@@ -329,6 +368,7 @@ func (u *autoUpdater) recoverFromFailedHealthCheck(ctx context.Context, broken s
 		}
 		if lastErr = u.validate(ctx, cand); lastErr == nil {
 			u.recoverSwap(cand)
+			u.curUnhealthy = false
 			*outcome = "recovered"
 			u.logf("autoupdate: model updated from %s to %s (resolver=recovery)", broken, cand)
 			u.notify(noteEvent{Event: "recovered", From: broken, To: cand, Attempts: attempt, Resolver: "recovery"})
@@ -339,14 +379,25 @@ func (u *autoUpdater) recoverFromFailedHealthCheck(ctx context.Context, broken s
 			u.sleep(ctx, validationBackoffs[attempt-1])
 		}
 	}
-	u.failHealthCheck(broken, lastErr, outcome)
+	if ctx.Err() != nil {
+		*outcome = "cancelled"
+		return
+	}
+	// Both errors matter to whoever reads the alert: what broke the current
+	// model AND why the replacement could not take over.
+	u.failHealthCheck(broken, fmt.Errorf("health check: %v; recovery candidate %s also failed: %v", healthErr, cand, lastErr), outcome)
 }
 
 // recoveryCandidate returns a replacement for a broken current model, or "".
 // Gateway first (rejecting cross-family, unparseable, or same-release
-// answers), catalog scan second. An unparseable broken model yields "" —
-// nothing to gate against.
-func (u *autoUpdater) recoveryCandidate(ctx context.Context, broken string) string {
+// answers), catalog scan second. A candidate already declined this cycle is
+// rejected too (belt-and-suspenders: healthCheck's skip-guard normally means
+// declined is "" whenever recovery runs). An unparseable broken model yields
+// "" — nothing to gate against.
+func (u *autoUpdater) recoveryCandidate(ctx context.Context, broken, declined string) string {
+	if ctx.Err() != nil {
+		return ""
+	}
 	parsed, err := parseModelID(broken)
 	if err != nil {
 		return ""
@@ -368,6 +419,10 @@ func (u *autoUpdater) recoveryCandidate(ctx context.Context, broken string) stri
 		return ""
 	}
 	if cand, ok := latestCandidate(ids, parsed); ok && !sameModel(cand, broken) {
+		if declined != "" && sameModel(cand, declined) {
+			u.logf("autoupdate: recovery candidate %s was already declined this cycle, ignoring", cand)
+			return ""
+		}
 		return cand
 	}
 	return ""
@@ -397,7 +452,14 @@ func (u *autoUpdater) tryUpgrade(ctx context.Context, cur, cand, resolver string
 			return false
 		}
 		if lastErr = u.validate(ctx, cand); lastErr == nil {
-			u.swap(cand)
+			if u.curUnhealthy {
+				// The outgoing model conclusively failed its last health
+				// check — never record it as the fallback.
+				u.recoverSwap(cand)
+			} else {
+				u.swap(cand)
+			}
+			u.curUnhealthy = false
 			*outcome = "upgraded"
 			u.logf("autoupdate: upgraded %s -> %s (attempt %d/%d, resolver %s)", cur, cand, attempt, validationAttempts, resolver)
 			u.notify(noteEvent{Event: "upgraded", From: cur, To: cand, Attempts: attempt, Resolver: resolver})
@@ -407,6 +469,11 @@ func (u *autoUpdater) tryUpgrade(ctx context.Context, cur, cand, resolver string
 		if attempt < validationAttempts {
 			u.sleep(ctx, validationBackoffs[attempt-1])
 		}
+	}
+	if ctx.Err() != nil {
+		// Shutdown, not a verdict on the candidate: no decline, no alert.
+		*outcome = "cancelled"
+		return false
 	}
 	*outcome = "declined"
 	u.notify(noteEvent{Event: "declined", From: cur, To: cand, Attempts: validationAttempts, Error: lastErr.Error(), Resolver: resolver})
@@ -499,6 +566,10 @@ func (b *bedrockLLM) startAutoUpdate(env node.NodeEnv, awsCfg aws.Config) {
 		recoverSwap: b.recoverModel,
 		resolve:     resolve,
 		list: func(ctx context.Context) ([]string, error) {
+			// Bounded: the scan paginates, and a stuck control-plane call must
+			// never hang the updater goroutine for the rest of the process.
+			ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+			defer cancel()
 			return listActiveProfileIDs(ctx, cp)
 		},
 		validate: b.validateModel,
@@ -509,10 +580,12 @@ func (b *bedrockLLM) startAutoUpdate(env node.NodeEnv, awsCfg aws.Config) {
 		jitter:   productionJitter,
 	}
 	go func() {
-		_ = safego.Run("bedrock-autoupdate", func() error {
+		if err := safego.Run("bedrock-autoupdate", func() error {
 			u.run(ctx)
 			return nil
-		})
+		}); err != nil {
+			b.logger.Printf("ai/bedrock wf=%s node=%s autoupdate: goroutine terminated, auto-update DISABLED for this process: %v", b.wfID, b.nodeID, err)
+		}
 	}()
 	b.logger.Printf("ai/bedrock wf=%s node=%s autoupdate: enabled (model=%s gateway=%s subject=%s)", b.wfID, b.nodeID, b.currentModel(), gwSubject, subject)
 }
@@ -575,12 +648,17 @@ func newGatewayResolve(nc *nats.Conn, subject string, current func() string) fun
 	}
 }
 
+// maxProfilePages caps the catalog scan: a control-plane bug that keeps
+// handing back a NextToken must fail the scan (retry next cycle) instead of
+// paging forever.
+const maxProfilePages = 50
+
 // listActiveProfileIDs pages through SYSTEM_DEFINED inference profiles and
 // returns the ACTIVE profile IDs (e.g. "us.anthropic.claude-opus-4-8").
 func listActiveProfileIDs(ctx context.Context, client *awsbedrock.Client) ([]string, error) {
 	var ids []string
 	var token *string
-	for {
+	for page := 1; ; page++ {
 		out, err := client.ListInferenceProfiles(ctx, &awsbedrock.ListInferenceProfilesInput{
 			TypeEquals: cptypes.InferenceProfileTypeSystemDefined,
 			NextToken:  token,
@@ -595,6 +673,9 @@ func listActiveProfileIDs(ctx context.Context, client *awsbedrock.Client) ([]str
 		}
 		if out.NextToken == nil {
 			return ids, nil
+		}
+		if page >= maxProfilePages {
+			return nil, fmt.Errorf("ai/bedrock: inference profile pagination exceeded %d pages", maxProfilePages)
 		}
 		token = out.NextToken
 	}
@@ -648,11 +729,17 @@ func (b *bedrockLLM) validateModel(ctx context.Context, modelID string) error {
 	stream := resp.GetStream()
 	defer stream.Close()
 
+	// Decode/stream errors stay unwrapped: they are inconclusive about the
+	// model itself (the safe default for the health check). A tool-contract
+	// violation is wrapped so healthCheckConclusive can act on it.
 	events, err := collectProbeEvents(ctx, stream)
 	if err != nil {
 		return err
 	}
-	return verifyToolProbe(events)
+	if err := verifyToolProbe(events); err != nil {
+		return fmt.Errorf("%w: %v", errProbeContract, err)
+	}
+	return nil
 }
 
 // collectProbeEvents drains a probe stream through handleAnthropicChunk —

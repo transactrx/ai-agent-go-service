@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/aws/smithy-go"
 	"github.com/nats-io/nats.go"
 	nats_service "github.com/transactrx/nats-service/pkg/nats-service"
 	nats_service_common "github.com/transactrx/nats-service/pkg/nats-service-common"
@@ -331,36 +333,39 @@ func TestRunOnceUpgrade(t *testing.T) {
 
 // TestRunOnceDecline: validation fails 3× → no swap, "declined" event with
 // attempts=3 + error text; two backoff sleeps (none after the last attempt).
-// The always-on health check then also fails (same always-failing validate
-// fake): current model (4-7) probed 3×, recovery candidate 4-8 probed 3×
-// (gateway nil, catalog scan agrees but is not the same release as the
-// broken model), so totals become validateCalls=3+3+3=9, sleeps=2+2+2=6, and
-// a second "health-check-failed" event is published.
+// The always-on health check then also fails, but the fake's error is a plain
+// error — INCONCLUSIVE (a throttle/timeout looks like this), so recovery is
+// never attempted and no health-check-failed event is published: totals are
+// validateCalls=3+3=6, sleeps=2+2=4, one event (declined), outcome
+// health-check-inconclusive.
 func TestRunOnceDecline(t *testing.T) {
 	u, model, events, validateCalls, sleeps := newTestUpdater()
+	u.recoverSwap = func(string) { t.Fatal("recoverSwap must not be called on an inconclusive health check") }
 	u.validate = func(context.Context, string) error {
 		*validateCalls++
 		return errors.New("AccessDeniedException")
 	}
+	var buf bytes.Buffer
+	u.logger = log.New(&buf, "", 0)
 	u.runOnce(context.Background())
 
 	if *model != "us.anthropic.claude-opus-4-7" {
 		t.Fatalf("model = %q, want unchanged", *model)
 	}
-	if *validateCalls != 9 || *sleeps != 6 {
-		t.Fatalf("validateCalls=%d sleeps=%d, want 9 and 6", *validateCalls, *sleeps)
+	// Was 9/6 before error classification: the 3 recovery probes are gone.
+	if *validateCalls != 6 || *sleeps != 4 {
+		t.Fatalf("validateCalls=%d sleeps=%d, want 6 and 4", *validateCalls, *sleeps)
 	}
-	if len(*events) != 2 {
-		t.Fatalf("events = %d, want 2", len(*events))
+	if len(*events) != 1 {
+		t.Fatalf("events = %d, want 1 (declined only; inconclusive health check never alerts): %+v", len(*events), *events)
 	}
 	ev := (*events)[0]
 	if ev.Event != "declined" || ev.Attempts != 3 || ev.Error == "" || ev.To != "us.anthropic.claude-opus-4-8" ||
 		ev.Resolver != "fallback" {
 		t.Fatalf("unexpected event: %+v", ev)
 	}
-	ev2 := (*events)[1]
-	if ev2.Event != "health-check-failed" || ev2.From != "us.anthropic.claude-opus-4-7" || ev2.Error == "" {
-		t.Fatalf("unexpected event: %+v", ev2)
+	if !strings.Contains(buf.String(), "outcome=health-check-inconclusive") {
+		t.Fatalf("summary log missing outcome=health-check-inconclusive:\n%s", buf.String())
 	}
 }
 
@@ -477,7 +482,9 @@ func TestRunOnceGatewayDeclineFallsBackToScan(t *testing.T) {
 // declined this cycle, recovery is skipped (re-resolving would just return
 // the same declined answer): +3 validateCalls (health-check probes), one
 // extra "health-check-failed" event, and the summary outcome becomes
-// "health-check-failed" (overriding "declined").
+// "health-check-failed" (overriding "declined"). The fake returns a real
+// smithy ValidationException so the health-check failure is CONCLUSIVE — a
+// plain error would now be classified inconclusive and skip the alert.
 func TestRunOnceGatewayDeclineNothingElse(t *testing.T) {
 	u, model, events, validateCalls, _ := newTestUpdater()
 	u.list = func(context.Context) ([]string, error) {
@@ -486,7 +493,7 @@ func TestRunOnceGatewayDeclineNothingElse(t *testing.T) {
 	u.resolve = func(context.Context) (string, error) { return "us.anthropic.claude-opus-4-9", nil }
 	u.validate = func(context.Context, string) error {
 		*validateCalls++
-		return errors.New("ValidationException")
+		return validationErr()
 	}
 	var buf bytes.Buffer
 	u.logger = log.New(&buf, "", 0)
@@ -510,13 +517,14 @@ func TestRunOnceGatewayDeclineNothingElse(t *testing.T) {
 // always-on health check then also fails (same always-failing validate fake)
 // and, since the gateway candidate was declined this cycle, recovery is
 // skipped: +3 validateCalls (health-check probes of the current model), one
-// extra "health-check-failed" event.
+// extra "health-check-failed" event. Conclusive (smithy) error so the health
+// check still alerts.
 func TestRunOnceGatewayDeclineScanAgrees(t *testing.T) {
 	u, model, events, validateCalls, _ := newTestUpdater()
 	u.resolve = func(context.Context) (string, error) { return "us.anthropic.claude-opus-4-8", nil } // == scan's candidate
 	u.validate = func(context.Context, string) error {
 		*validateCalls++
-		return errors.New("ValidationException")
+		return validationErr()
 	}
 	u.runOnce(context.Background())
 
@@ -691,12 +699,24 @@ func TestRunOnceAlwaysLogsSummary(t *testing.T) {
 		},
 		{
 			// The always-failing validate fake also fails the always-on
-			// health check and its one-shot recovery, so the final outcome
-			// is "health-check-failed" (overriding the upgrade stage's
-			// "declined") — same summary-log guarantee, updated outcome.
+			// health check, but with a plain error — inconclusive, so the
+			// final outcome is "health-check-inconclusive" (overriding the
+			// upgrade stage's "declined") rather than "health-check-failed":
+			// same summary-log guarantee, updated outcome.
 			name: "declined",
 			mutate: func(u *autoUpdater) {
 				u.validate = func(context.Context, string) error { return errors.New("denied") }
+			},
+			wantOutcome: "outcome=health-check-inconclusive",
+			wantModel:   "modelInUse=us.anthropic.claude-opus-4-7",
+		},
+		{
+			// Same scenario with a conclusive (smithy) error: recovery is
+			// attempted, finds nothing (scan candidate already declined), and
+			// the cycle ends health-check-failed.
+			name: "health check failed",
+			mutate: func(u *autoUpdater) {
+				u.validate = func(context.Context, string) error { return validationErr() }
 			},
 			wantOutcome: "outcome=health-check-failed",
 			wantModel:   "modelInUse=us.anthropic.claude-opus-4-7",
@@ -875,17 +895,19 @@ func TestRunOnceHealthCheckHealthy(t *testing.T) {
 	}
 }
 
-// Current model fails its health check; gateway re-resolve returns the same
-// broken model (rejected via sameModel); catalog scan provides 4-8, which
-// validates → recoverSwap, outcome recovered, "recovered" event.
-func TestRunOnceHealthCheckRecovers(t *testing.T) {
+// Current model fails its health check CONCLUSIVELY (smithy
+// ValidationException: the model is gone/unentitled); gateway re-resolve
+// returns the same broken model (rejected via sameModel); catalog scan
+// provides 4-8, which validates → recoverSwap, outcome recovered, "recovered"
+// event. Only conclusive failures may swap live traffic.
+func TestRunOnceHealthCheckRecoversOnConclusiveError(t *testing.T) {
 	u, model, events, _, _ := newTestUpdater()
 	recovered := ""
 	u.recoverSwap = func(m string) { recovered = m; *model = m }
 	u.resolve = func(context.Context) (string, error) { return *model, nil } // "confirms" current
 	u.validate = func(_ context.Context, id string) error {
 		if id == "us.anthropic.claude-opus-4-7" {
-			return errors.New("model deprecated by AWS")
+			return validationErr()
 		}
 		return nil
 	}
@@ -903,12 +925,15 @@ func TestRunOnceHealthCheckRecovers(t *testing.T) {
 
 // A gateway candidate already declined this cycle → recovery is skipped
 // (re-resolving would return the same declined answer): outcome
-// health-check-failed, two events (declined, health-check-failed).
+// health-check-failed, two events (declined, health-check-failed). The fake
+// returns a conclusive (smithy) error so the scenario still reaches
+// failHealthCheck — a plain "everything fails" error is now classified
+// inconclusive and would stop before the alert.
 func TestRunOnceHealthCheckFailedAfterDecline(t *testing.T) {
 	u, model, events, _, _ := newTestUpdater()
 	u.recoverSwap = func(string) { t.Fatal("recoverSwap must not be called") }
 	u.resolve = func(context.Context) (string, error) { return "us.anthropic.claude-opus-4-8", nil }
-	u.validate = func(_ context.Context, _ string) error { return errors.New("everything fails") }
+	u.validate = func(_ context.Context, _ string) error { return validationErr() }
 	u.runOnce(context.Background())
 	if *model != "us.anthropic.claude-opus-4-7" {
 		t.Fatalf("model = %q, want unchanged", *model)
@@ -922,12 +947,13 @@ func TestRunOnceHealthCheckFailedAfterDecline(t *testing.T) {
 }
 
 // No recovery candidate anywhere (gateway nil, catalog empty) → outcome
-// health-check-failed, single event.
+// health-check-failed, single event. Conclusive (smithy) error so
+// failHealthCheck is still exercised.
 func TestRunOnceHealthCheckFailedNoCandidate(t *testing.T) {
 	u, model, events, _, _ := newTestUpdater()
 	u.recoverSwap = func(string) { t.Fatal("recoverSwap must not be called") }
 	u.list = func(context.Context) ([]string, error) { return nil, nil }
-	u.validate = func(_ context.Context, _ string) error { return errors.New("model broken") }
+	u.validate = func(_ context.Context, _ string) error { return validationErr() }
 	u.runOnce(context.Background())
 	if *model != "us.anthropic.claude-opus-4-7" {
 		t.Fatalf("model = %q, want unchanged", *model)
@@ -951,6 +977,214 @@ func TestRunOnceHealthCheckSkippedAfterUpgrade(t *testing.T) {
 	}
 	if len(*events) != 1 || (*events)[0].Event != "upgraded" {
 		t.Fatalf("unexpected events: %+v", *events)
+	}
+}
+
+// TestHealthCheckConclusive: only a missing/unentitled model (smithy
+// ValidationException / ResourceNotFoundException) or a tool-contract
+// violation indicts the model. Throttles, timeouts and plain transport errors
+// are inconclusive — they must never trigger recovery or an alert.
+func TestHealthCheckConclusive(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"model gone", validationErr(), true},
+		{"model not found", &smithy.GenericAPIError{Code: "ResourceNotFoundException"}, true},
+		{"tool contract violation", fmt.Errorf("%w: no tool_use block", errProbeContract), true},
+		{"throttled", &smithy.GenericAPIError{Code: "ThrottlingException"}, false},
+		{"timeout", context.DeadlineExceeded, false},
+		{"plain transport error", errors.New("connection reset by peer"), false},
+	}
+	for _, c := range cases {
+		if got := healthCheckConclusive(c.err); got != c.want {
+			t.Errorf("healthCheckConclusive(%s) = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// A transient health-check failure (throttle) must NOT be treated as "model
+// broken": no recovery probes, no events, model untouched, outcome
+// health-check-inconclusive. Gateway confirms the current model, so the only
+// validate calls are the 3 health-check probes.
+func TestRunOnceHealthCheckInconclusiveOnTransientError(t *testing.T) {
+	u, model, events, validateCalls, _ := newTestUpdater()
+	u.recoverSwap = func(string) { t.Fatal("recoverSwap must not be called on a transient error") }
+	u.swap = func(string) { t.Fatal("swap must not be called on a transient error") }
+	u.resolve = func(context.Context) (string, error) { return "us.anthropic.claude-opus-4-7", nil }
+	u.validate = func(context.Context, string) error {
+		*validateCalls++
+		return errors.New("ThrottlingException: rate exceeded")
+	}
+	var buf bytes.Buffer
+	u.logger = log.New(&buf, "", 0)
+	u.runOnce(context.Background())
+
+	if *model != "us.anthropic.claude-opus-4-7" {
+		t.Fatalf("model = %q, want unchanged", *model)
+	}
+	if *validateCalls != 3 {
+		t.Fatalf("validateCalls = %d, want 3 (health-check probes only; no recovery probes)", *validateCalls)
+	}
+	if len(*events) != 0 {
+		t.Fatalf("events = %d, want 0 (a throttle must not alert): %+v", len(*events), *events)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "health check inconclusive for current model") ||
+		!strings.Contains(out, "outcome=health-check-inconclusive") {
+		t.Fatalf("missing inconclusive log lines:\n%s", out)
+	}
+}
+
+// B2: a model that conclusively failed its health check must never be
+// recorded as last-known-good, even by a LATER cycle's upgrade. Cycle 1:
+// gateway confirms current, current fails conclusively, no recovery candidate
+// → health-check-failed (unhealthiness latched). Cycle 2 on the SAME updater:
+// gateway offers 4-8, it validates → promoted via recoverSwap, not swap.
+func TestUpgradeAfterConclusiveFailureUsesRecoverSwap(t *testing.T) {
+	u, model, events, _, _ := newTestUpdater()
+	swapped, recovered := "", ""
+	u.swap = func(m string) { swapped = m; *model = m }
+	u.recoverSwap = func(m string) { recovered = m; *model = m }
+	u.list = func(context.Context) ([]string, error) { return nil, nil } // no catalog recovery candidate
+	gatewayAnswer := "us.anthropic.claude-opus-4-7"                      // cycle 1: confirms current
+	u.resolve = func(context.Context) (string, error) { return gatewayAnswer, nil }
+	broken := true
+	u.validate = func(context.Context, string) error {
+		if broken {
+			return validationErr() // conclusive
+		}
+		return nil
+	}
+
+	u.runOnce(context.Background()) // cycle 1
+	if len(*events) != 1 || (*events)[0].Event != "health-check-failed" {
+		t.Fatalf("cycle 1 events = %+v, want one health-check-failed", *events)
+	}
+	if !u.curUnhealthy {
+		t.Fatal("cycle 1 did not latch curUnhealthy")
+	}
+
+	broken = false
+	gatewayAnswer = "us.anthropic.claude-opus-4-8" // cycle 2: an upgrade appears
+	u.runOnce(context.Background())                // cycle 2
+
+	if recovered != "us.anthropic.claude-opus-4-8" {
+		t.Fatalf("recovered = %q, want the upgrade promoted via recoverSwap", recovered)
+	}
+	if swapped != "" {
+		t.Fatalf("swap was used (%q): the broken model would have become last-known-good", swapped)
+	}
+	if u.curUnhealthy {
+		t.Fatal("curUnhealthy not cleared after the upgrade")
+	}
+	if len(*events) != 2 || (*events)[1].Event != "upgraded" {
+		t.Fatalf("cycle 2 events = %+v, want an upgraded event", *events)
+	}
+}
+
+// B3: context cancelled during the LAST validation attempt is a shutdown, not
+// a verdict — outcome cancelled, no declined event, no health check.
+func TestRunOnceCancelledDuringFinalAttempt(t *testing.T) {
+	u, model, events, validateCalls, _ := newTestUpdater()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	u.validate = func(context.Context, string) error {
+		*validateCalls++
+		if *validateCalls == validationAttempts {
+			cancel() // shutdown lands while the final probe is in flight
+		}
+		return errors.New("connection reset by peer")
+	}
+	var buf bytes.Buffer
+	u.logger = log.New(&buf, "", 0)
+	u.runOnce(ctx)
+
+	if *model != "us.anthropic.claude-opus-4-7" {
+		t.Fatalf("model = %q, want unchanged", *model)
+	}
+	if *validateCalls != validationAttempts {
+		t.Fatalf("validateCalls = %d, want %d (health check must not run)", *validateCalls, validationAttempts)
+	}
+	if len(*events) != 0 {
+		t.Fatalf("events = %d, want 0 (cancellation must not publish declined/health-check-failed): %+v", len(*events), *events)
+	}
+	if !strings.Contains(buf.String(), "outcome=cancelled") {
+		t.Fatalf("summary log missing outcome=cancelled:\n%s", buf.String())
+	}
+}
+
+// Recovery when the GATEWAY ITSELF errors (not "confirms current"): the
+// catalog scan must still supply the replacement. The first scan (upgrade
+// stage) is throttled so no upgrade happens and the health check runs; the
+// recovery re-scan succeeds and offers 4-8.
+func TestRecoveryGatewayErrorFallsToCatalog(t *testing.T) {
+	u, model, events, _, _ := newTestUpdater()
+	recovered := ""
+	u.recoverSwap = func(m string) { recovered = m; *model = m }
+	u.swap = func(string) { t.Fatal("swap must not be called: recovery uses recoverSwap") }
+	u.resolve = func(context.Context) (string, error) { return "", errors.New("gateway down") }
+	listCalls := 0
+	u.list = func(context.Context) ([]string, error) {
+		listCalls++
+		if listCalls == 1 {
+			return nil, errors.New("throttled")
+		}
+		return []string{"us.anthropic.claude-opus-4-8"}, nil
+	}
+	u.validate = func(_ context.Context, id string) error {
+		if id == "us.anthropic.claude-opus-4-7" {
+			return validationErr() // conclusive: current model is gone
+		}
+		return nil
+	}
+	u.runOnce(context.Background())
+
+	if recovered != "us.anthropic.claude-opus-4-8" || *model != "us.anthropic.claude-opus-4-8" {
+		t.Fatalf("recovered = %q model = %q, want 4-8 via the catalog scan", recovered, *model)
+	}
+	if len(*events) != 1 || (*events)[0].Event != "recovered" || (*events)[0].Resolver != "recovery" {
+		t.Fatalf("unexpected events: %+v", *events)
+	}
+}
+
+// B4: the gateway answering with the DATED form of the current release is the
+// current model, not a candidate — no probe of it, no swap, no event; just the
+// health check's single probe.
+func TestSameModelUsedForAlreadyLatest(t *testing.T) {
+	u, model, events, validateCalls, _ := newTestUpdater()
+	u.swap = func(string) { t.Fatal("swap must not be called: the gateway named the current release") }
+	u.recoverSwap = func(string) { t.Fatal("recoverSwap must not be called") }
+	listCalls := 0
+	u.list = func(context.Context) ([]string, error) { listCalls++; return nil, nil }
+	probed := []string{}
+	u.validate = func(_ context.Context, id string) error {
+		*validateCalls++
+		probed = append(probed, id)
+		return nil
+	}
+	u.resolve = func(context.Context) (string, error) {
+		return "us.anthropic.claude-opus-4-7-20260101-v1:0", nil // dated form of current
+	}
+	var buf bytes.Buffer
+	u.logger = log.New(&buf, "", 0)
+	u.runOnce(context.Background())
+
+	if *model != "us.anthropic.claude-opus-4-7" {
+		t.Fatalf("model = %q, want unchanged", *model)
+	}
+	if listCalls != 0 {
+		t.Fatalf("listCalls = %d, want 0 (gateway confirmed current, scan not consulted)", listCalls)
+	}
+	if len(probed) != 1 || probed[0] != "us.anthropic.claude-opus-4-7" {
+		t.Fatalf("probed = %v, want only the health check of the current model", probed)
+	}
+	if len(*events) != 0 {
+		t.Fatalf("events = %d, want 0: %+v", len(*events), *events)
+	}
+	if !strings.Contains(buf.String(), "outcome=already-latest") {
+		t.Fatalf("summary log missing outcome=already-latest:\n%s", buf.String())
 	}
 }
 
