@@ -150,26 +150,36 @@ func TestModelSwapConcurrent(t *testing.T) {
 	}
 }
 
-// TestNextRunAt verifies the next-02:00-local computation around the
-// boundary. time.Date normalizes DST transitions, so date math is safe.
 func TestNextRunAt(t *testing.T) {
-	loc := time.FixedZone("test", -5*3600)
+	// Anchor is 07:00 UTC regardless of the input's zone.
+	est := time.FixedZone("est", -5*3600)
 	cases := []struct {
 		now  time.Time
 		want time.Time
 	}{
-		// Before 02:00 → same day 02:00.
-		{time.Date(2026, 6, 5, 1, 0, 0, 0, loc), time.Date(2026, 6, 5, 2, 0, 0, 0, loc)},
-		// Exactly 02:00 → next day (strictly after now).
-		{time.Date(2026, 6, 5, 2, 0, 0, 0, loc), time.Date(2026, 6, 6, 2, 0, 0, 0, loc)},
-		// Afternoon → next day 02:00.
-		{time.Date(2026, 6, 5, 14, 30, 0, 0, loc), time.Date(2026, 6, 6, 2, 0, 0, 0, loc)},
+		// Before 07:00 UTC → same day 07:00 UTC.
+		{time.Date(2026, 6, 5, 6, 0, 0, 0, time.UTC), time.Date(2026, 6, 5, 7, 0, 0, 0, time.UTC)},
+		// Exactly 07:00 UTC → next day (strictly after now).
+		{time.Date(2026, 6, 5, 7, 0, 0, 0, time.UTC), time.Date(2026, 6, 6, 7, 0, 0, 0, time.UTC)},
+		// Afternoon UTC → next day.
+		{time.Date(2026, 6, 5, 14, 30, 0, 0, time.UTC), time.Date(2026, 6, 6, 7, 0, 0, 0, time.UTC)},
+		// Local zone input: 03:00 EST = 08:00 UTC → next day 07:00 UTC.
+		{time.Date(2026, 6, 5, 3, 0, 0, 0, est), time.Date(2026, 6, 6, 7, 0, 0, 0, time.UTC)},
 		// Month boundary.
-		{time.Date(2026, 6, 30, 23, 59, 0, 0, loc), time.Date(2026, 7, 1, 2, 0, 0, 0, loc)},
+		{time.Date(2026, 6, 30, 23, 59, 0, 0, time.UTC), time.Date(2026, 7, 1, 7, 0, 0, 0, time.UTC)},
 	}
 	for _, c := range cases {
 		if got := nextRunAt(c.now); !got.Equal(c.want) {
 			t.Errorf("nextRunAt(%v) = %v, want %v", c.now, got, c.want)
+		}
+	}
+}
+
+func TestProductionJitterRange(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		j := productionJitter()
+		if j < 0 || j >= maxJitter {
+			t.Fatalf("jitter %v out of [0, %v)", j, maxJitter)
 		}
 	}
 }

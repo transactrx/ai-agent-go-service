@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"regexp"
 	"strconv"
@@ -119,15 +120,26 @@ func gatewayCandidateOK(id string, current parsedModel) error {
 	return nil
 }
 
-// checkHour is the daily check time: 02:00 server-local — after-hours, and
-// leaves room for other midnight batch jobs (spec decision 2).
-const checkHour = 2
+// anchorHourUTC is the daily check time: 07:00 UTC — anchored to UTC (not
+// server-local) so every region and container agrees on the cycle time
+// regardless of host timezone (ported from powerlineAIApi).
+const anchorHourUTC = 7
 
-// nextRunAt returns the next strictly-future occurrence of 02:00 local.
+// maxJitter spreads wake-ups across containers/nodes so the gateway and
+// Bedrock are not hit by a thundering herd at the anchor.
+const maxJitter = 30 * time.Minute
+
+// productionJitter draws a fresh random delay in [0, maxJitter) per cycle.
+func productionJitter() time.Duration {
+	return time.Duration(rand.Int63n(int64(maxJitter)))
+}
+
+// nextRunAt returns the next strictly-future occurrence of 07:00 UTC.
 func nextRunAt(now time.Time) time.Time {
-	next := time.Date(now.Year(), now.Month(), now.Day(), checkHour, 0, 0, 0, now.Location())
-	if !next.After(now) {
-		next = next.AddDate(0, 0, 1)
+	utc := now.UTC()
+	next := time.Date(utc.Year(), utc.Month(), utc.Day(), anchorHourUTC, 0, 0, 0, time.UTC)
+	if !next.After(utc) {
+		next = next.Add(24 * time.Hour)
 	}
 	return next
 }
@@ -169,6 +181,7 @@ type autoUpdater struct {
 	subject  string
 	now      func() time.Time
 	sleep    func(ctx context.Context, d time.Duration)
+	jitter   func() time.Duration // per-cycle random delay after the anchor; nil → none
 }
 
 // runOnce executes one full check: discover → select → validate (with
@@ -299,12 +312,15 @@ const (
 	notifySubjectSuffix = ".modelAutoUpdate"
 )
 
-// run executes the startup check, then one check per day at 02:00 local,
-// until ctx is cancelled.
 func (u *autoUpdater) run(ctx context.Context) {
 	u.runOnce(ctx)
 	for {
-		next := nextRunAt(u.now())
+		delay := time.Duration(0)
+		if u.jitter != nil {
+			delay = u.jitter()
+		}
+		next := nextRunAt(u.now()).Add(delay)
+		u.logf("autoupdate: next run at %s", next.Format(time.RFC3339))
 		timer := time.NewTimer(next.Sub(u.now()))
 		select {
 		case <-ctx.Done():
@@ -355,6 +371,7 @@ func (b *bedrockLLM) startAutoUpdate(env node.NodeEnv, awsCfg aws.Config) {
 		subject:  subject,
 		now:      time.Now,
 		sleep:    sleepCtx,
+		jitter:   productionJitter,
 	}
 	go func() {
 		_ = safego.Run("bedrock-autoupdate", func() error {
