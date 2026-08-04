@@ -357,6 +357,12 @@ func (u *autoUpdater) recoverFromFailedHealthCheck(ctx context.Context, broken, 
 	u.logf("autoupdate: current model %s failed its health check, recovering", broken)
 	cand := u.recoveryCandidate(ctx, broken, declined)
 	if cand == "" {
+		if ctx.Err() != nil {
+			// Shutdown cut the re-resolve short: no candidate found is not a
+			// verdict, so no alert.
+			*outcome = "cancelled"
+			return
+		}
 		u.failHealthCheck(broken, healthErr, outcome)
 		return
 	}

@@ -1115,6 +1115,44 @@ func TestRunOnceCancelledDuringFinalAttempt(t *testing.T) {
 	}
 }
 
+// B3: shutdown landing on the recovery RE-RESOLVE (not on a probe loop) is
+// also not a verdict — "no recovery candidate" because the context died must
+// report cancelled, never health-check-failed.
+func TestRunOnceCancelledDuringRecoveryResolve(t *testing.T) {
+	u, model, events, _, _ := newTestUpdater()
+	u.recoverSwap = func(string) { t.Fatal("recoverSwap must not be called") }
+	u.swap = func(string) { t.Fatal("swap must not be called") }
+	u.list = func(context.Context) ([]string, error) { return nil, nil } // no catalog candidate
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	resolveCalls := 0
+	u.resolve = func(context.Context) (string, error) {
+		resolveCalls++
+		if resolveCalls == 1 {
+			return "us.anthropic.claude-opus-4-7", nil // upgrade stage: confirms current
+		}
+		cancel() // shutdown lands on the recovery re-resolve
+		return "", errors.New("gateway request cancelled")
+	}
+	u.validate = func(context.Context, string) error { return validationErr() } // conclusive
+	var buf bytes.Buffer
+	u.logger = log.New(&buf, "", 0)
+	u.runOnce(ctx)
+
+	if *model != "us.anthropic.claude-opus-4-7" {
+		t.Fatalf("model = %q, want unchanged", *model)
+	}
+	if resolveCalls != 2 {
+		t.Fatalf("resolveCalls = %d, want 2 (upgrade stage + recovery re-resolve)", resolveCalls)
+	}
+	if len(*events) != 0 {
+		t.Fatalf("events = %d, want 0 (cancellation must not publish health-check-failed): %+v", len(*events), *events)
+	}
+	if !strings.Contains(buf.String(), "outcome=cancelled") {
+		t.Fatalf("summary log missing outcome=cancelled:\n%s", buf.String())
+	}
+}
+
 // Recovery when the GATEWAY ITSELF errors (not "confirms current"): the
 // catalog scan must still supply the replacement. The first scan (upgrade
 // stage) is throttled so no upgrade happens and the health check runs; the
