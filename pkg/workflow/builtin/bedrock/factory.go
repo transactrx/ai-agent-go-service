@@ -73,6 +73,11 @@ type bedrockLLM struct {
 	modelMu sync.RWMutex
 	model   string
 
+	// lastKnownGood is the model displaced by the last validated upgrade —
+	// offered as a request-time fallback in Stream if the fresh model breaks
+	// mid-day. In-memory only; reset on restart (startup runOnce re-resolves).
+	lastKnownGood string
+
 	cancelUpdater context.CancelFunc
 }
 
@@ -89,6 +94,36 @@ func (b *bedrockLLM) setModel(m string) {
 	b.modelMu.Lock()
 	b.model = m
 	b.modelMu.Unlock()
+}
+
+// swapModel promotes m after a VALIDATED upgrade, keeping the displaced
+// model as last-known-good for the request-time fallback.
+func (b *bedrockLLM) swapModel(m string) {
+	b.modelMu.Lock()
+	if b.model != m {
+		b.lastKnownGood = b.model
+	}
+	b.model = m
+	b.modelMu.Unlock()
+}
+
+// recoverModel promotes m after the current model FAILED its health check.
+// The broken model is never recorded as fallback; a stale fallback equal to
+// m is cleared (it is current again, not a fallback).
+func (b *bedrockLLM) recoverModel(m string) {
+	b.modelMu.Lock()
+	if b.lastKnownGood == m {
+		b.lastKnownGood = ""
+	}
+	b.model = m
+	b.modelMu.Unlock()
+}
+
+// lastKnownGoodModel returns the request-time fallback model ("" when none).
+func (b *bedrockLLM) lastKnownGoodModel() string {
+	b.modelMu.RLock()
+	defer b.modelMu.RUnlock()
+	return b.lastKnownGood
 }
 
 // Spec returns immutable metadata.

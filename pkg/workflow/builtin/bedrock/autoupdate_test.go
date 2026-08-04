@@ -174,6 +174,42 @@ func TestModelSwapConcurrent(t *testing.T) {
 	}
 }
 
+func TestSwapModelKeepsLastKnownGood(t *testing.T) {
+	b := &bedrockLLM{model: "us.anthropic.claude-opus-4-7"}
+	b.swapModel("us.anthropic.claude-opus-4-8")
+	if b.currentModel() != "us.anthropic.claude-opus-4-8" {
+		t.Fatalf("model = %q", b.currentModel())
+	}
+	if b.lastKnownGoodModel() != "us.anthropic.claude-opus-4-7" {
+		t.Fatalf("lastKnownGood = %q, want displaced model", b.lastKnownGoodModel())
+	}
+	// Same-value swap must not clobber the fallback with a duplicate.
+	b.swapModel("us.anthropic.claude-opus-4-8")
+	if b.lastKnownGoodModel() != "us.anthropic.claude-opus-4-7" {
+		t.Fatalf("lastKnownGood = %q after no-op swap", b.lastKnownGoodModel())
+	}
+}
+
+func TestRecoverModelNeverRecordsBrokenModel(t *testing.T) {
+	b := &bedrockLLM{model: "us.anthropic.claude-opus-4-7"}
+	b.swapModel("us.anthropic.claude-opus-4-8") // lkg = 4-7
+	// 4-8 fails its health check; recovery promotes 4-9. The broken 4-8 must
+	// NOT become the fallback; 4-7 stays.
+	b.recoverModel("us.anthropic.claude-opus-4-9")
+	if b.currentModel() != "us.anthropic.claude-opus-4-9" {
+		t.Fatalf("model = %q", b.currentModel())
+	}
+	if b.lastKnownGoodModel() != "us.anthropic.claude-opus-4-7" {
+		t.Fatalf("lastKnownGood = %q, want 4-7 preserved", b.lastKnownGoodModel())
+	}
+	// Recovery back onto the stored fallback clears it (it is now current).
+	b2 := &bedrockLLM{model: "us.anthropic.claude-opus-4-8", lastKnownGood: "us.anthropic.claude-opus-4-7"}
+	b2.recoverModel("us.anthropic.claude-opus-4-7")
+	if b2.lastKnownGoodModel() != "" {
+		t.Fatalf("lastKnownGood = %q, want cleared", b2.lastKnownGoodModel())
+	}
+}
+
 func TestNextRunAt(t *testing.T) {
 	// Anchor is 07:00 UTC regardless of the input's zone.
 	est := time.FixedZone("est", -5*3600)
