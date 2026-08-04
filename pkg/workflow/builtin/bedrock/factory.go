@@ -115,7 +115,7 @@ func (b *bedrockLLM) currentModel() string {
 	return b.model
 }
 
-// setModel hot-swaps the effective model. Auto-updater is the only caller.
+// setModel hot-swaps the effective model. Auto-updater and applyEnvPin are callers.
 func (b *bedrockLLM) setModel(m string) {
 	b.modelMu.Lock()
 	b.model = m

@@ -2,9 +2,13 @@
 // source is the org inferenceGateway (NATS resolveModel, see gateway.go),
 // fallback is a Bedrock control-plane scan — validates candidates with a real
 // test invocation (production payload shape, 3 attempts), and hot-swaps the
-// node's model in memory. Specs:
+// node's model in memory. Runs at startup and daily at 07:00 UTC (+0-30min
+// jitter); each cycle also health-checks the model in use and recovers via
+// re-resolve when it fails. AI_BEDROCK_MODEL_ID pins the model and disables
+// all of this. Specs:
 // docs/superpowers/specs/2026-06-05-bedrock-model-autoupdate-design.md
 // docs/superpowers/specs/2026-07-30-bedrock-gateway-model-resolution-design.md
+// docs/superpowers/specs/2026-08-04-bedrock-autoupdate-hardening-design.md
 package bedrock
 
 import (
@@ -172,7 +176,8 @@ type noteEvent struct {
 	Attempts   int    `json:"attempts"`
 	Error      string `json:"error,omitempty"`
 	// Resolver says which source produced the candidate: "gateway" (org
-	// inferenceGateway) or "fallback" (Bedrock catalog scan).
+	// inferenceGateway), "fallback" (Bedrock catalog scan), or "recovery"
+	// (health-check recovery).
 	Resolver  string `json:"resolver,omitempty"`
 	Timestamp string `json:"timestamp"`
 }
@@ -440,6 +445,7 @@ const (
 	notifySubjectSuffix = ".modelAutoUpdate"
 )
 
+// run executes the startup check, then one check per day at 07:00 UTC (+ jitter), until ctx is cancelled.
 func (u *autoUpdater) run(ctx context.Context) {
 	u.runOnce(ctx)
 	for {
