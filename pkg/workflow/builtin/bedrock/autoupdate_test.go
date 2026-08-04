@@ -251,11 +251,12 @@ func newTestUpdater() (*autoUpdater, *string, *[]noteEvent, *int, *int) {
 	var events []noteEvent
 	validateCalls, sleeps := 0, 0
 	u := &autoUpdater{
-		wfID:    "powerlineSearch",
-		nodeID:  "bedrock1",
-		current: func() string { return model },
-		swap:    func(m string) { model = m },
-		resolve: nil, // nil = legacy path (gateway disabled)
+		wfID:        "powerlineSearch",
+		nodeID:      "bedrock1",
+		current:     func() string { return model },
+		swap:        func(m string) { model = m },
+		recoverSwap: func(string) {}, // default no-op; tests override for recovery assertions
+		resolve:     nil,             // nil = legacy path (gateway disabled)
 		list: func(context.Context) ([]string, error) {
 			return []string{"us.anthropic.claude-opus-4-8"}, nil
 		},
@@ -308,6 +309,11 @@ func TestRunOnceUpgrade(t *testing.T) {
 
 // TestRunOnceDecline: validation fails 3× → no swap, "declined" event with
 // attempts=3 + error text; two backoff sleeps (none after the last attempt).
+// The always-on health check then also fails (same always-failing validate
+// fake): current model (4-7) probed 3×, recovery candidate 4-8 probed 3×
+// (gateway nil, catalog scan agrees but is not the same release as the
+// broken model), so totals become validateCalls=3+3+3=9, sleeps=2+2+2=6, and
+// a second "health-check-failed" event is published.
 func TestRunOnceDecline(t *testing.T) {
 	u, model, events, validateCalls, sleeps := newTestUpdater()
 	u.validate = func(context.Context, string) error {
@@ -319,16 +325,20 @@ func TestRunOnceDecline(t *testing.T) {
 	if *model != "us.anthropic.claude-opus-4-7" {
 		t.Fatalf("model = %q, want unchanged", *model)
 	}
-	if *validateCalls != 3 || *sleeps != 2 {
-		t.Fatalf("validateCalls=%d sleeps=%d, want 3 and 2", *validateCalls, *sleeps)
+	if *validateCalls != 9 || *sleeps != 6 {
+		t.Fatalf("validateCalls=%d sleeps=%d, want 9 and 6", *validateCalls, *sleeps)
 	}
-	if len(*events) != 1 {
-		t.Fatalf("events = %d, want 1", len(*events))
+	if len(*events) != 2 {
+		t.Fatalf("events = %d, want 2", len(*events))
 	}
 	ev := (*events)[0]
 	if ev.Event != "declined" || ev.Attempts != 3 || ev.Error == "" || ev.To != "us.anthropic.claude-opus-4-8" ||
 		ev.Resolver != "fallback" {
 		t.Fatalf("unexpected event: %+v", ev)
+	}
+	ev2 := (*events)[1]
+	if ev2.Event != "health-check-failed" || ev2.From != "us.anthropic.claude-opus-4-7" || ev2.Error == "" {
+		t.Fatalf("unexpected event: %+v", ev2)
 	}
 }
 
@@ -379,8 +389,10 @@ func TestRunOnceGatewayAlreadyLatest(t *testing.T) {
 	u.resolve = func(context.Context) (string, error) { return "us.anthropic.claude-opus-4-7", nil }
 	u.runOnce(context.Background())
 
-	if *model != "us.anthropic.claude-opus-4-7" || *validateCalls != 0 || len(*events) != 0 || listCalls != 0 {
-		t.Fatalf("model=%q validateCalls=%d events=%d listCalls=%d — expected full no-op",
+	// +1 validate: the health check still probes the current model even
+	// though the gateway confirmed no upgrade is available.
+	if *model != "us.anthropic.claude-opus-4-7" || *validateCalls != 1 || len(*events) != 0 || listCalls != 0 {
+		t.Fatalf("model=%q validateCalls=%d events=%d listCalls=%d — expected full no-op + 1 health-check validate",
 			*model, *validateCalls, len(*events), listCalls)
 	}
 }
@@ -437,8 +449,13 @@ func TestRunOnceGatewayDeclineFallsBackToScan(t *testing.T) {
 }
 
 // TestRunOnceGatewayDeclineNothingElse: gateway candidate declined and the
-// scan finds nothing new → model unchanged, exactly one declined event
-// (resolver=gateway), summary outcome stays "declined".
+// scan finds nothing new → model unchanged, one declined event
+// (resolver=gateway). The always-on health check then also fails (same
+// always-failing validate fake) and, since a gateway candidate was already
+// declined this cycle, recovery is skipped (re-resolving would just return
+// the same declined answer): +3 validateCalls (health-check probes), one
+// extra "health-check-failed" event, and the summary outcome becomes
+// "health-check-failed" (overriding "declined").
 func TestRunOnceGatewayDeclineNothingElse(t *testing.T) {
 	u, model, events, validateCalls, _ := newTestUpdater()
 	u.list = func(context.Context) ([]string, error) {
@@ -453,20 +470,25 @@ func TestRunOnceGatewayDeclineNothingElse(t *testing.T) {
 	u.logger = log.New(&buf, "", 0)
 	u.runOnce(context.Background())
 
-	if *model != "us.anthropic.claude-opus-4-7" || *validateCalls != 3 {
-		t.Fatalf("model=%q validateCalls=%d, want unchanged and 3", *model, *validateCalls)
+	if *model != "us.anthropic.claude-opus-4-7" || *validateCalls != 6 {
+		t.Fatalf("model=%q validateCalls=%d, want unchanged and 6", *model, *validateCalls)
 	}
-	if len(*events) != 1 || (*events)[0].Event != "declined" || (*events)[0].Resolver != "gateway" {
+	if len(*events) != 2 || (*events)[0].Event != "declined" || (*events)[0].Resolver != "gateway" ||
+		(*events)[1].Event != "health-check-failed" {
 		t.Fatalf("unexpected events: %+v", *events)
 	}
-	if !strings.Contains(buf.String(), "outcome=declined") {
-		t.Fatalf("summary log missing outcome=declined:\n%s", buf.String())
+	if !strings.Contains(buf.String(), "outcome=health-check-failed") {
+		t.Fatalf("summary log missing outcome=health-check-failed:\n%s", buf.String())
 	}
 }
 
 // TestRunOnceGatewayDeclineScanAgrees: the scan's candidate is the same ID the
-// gateway already had declined — it must NOT be re-validated. Exactly 3
-// validate calls total (the gateway attempt), 1 declined event.
+// gateway already had declined — it must NOT be re-validated: only 3 validate
+// calls for the upgrade stage (the gateway attempt), 1 declined event. The
+// always-on health check then also fails (same always-failing validate fake)
+// and, since the gateway candidate was declined this cycle, recovery is
+// skipped: +3 validateCalls (health-check probes of the current model), one
+// extra "health-check-failed" event.
 func TestRunOnceGatewayDeclineScanAgrees(t *testing.T) {
 	u, model, events, validateCalls, _ := newTestUpdater()
 	u.resolve = func(context.Context) (string, error) { return "us.anthropic.claude-opus-4-8", nil } // == scan's candidate
@@ -479,10 +501,11 @@ func TestRunOnceGatewayDeclineScanAgrees(t *testing.T) {
 	if *model != "us.anthropic.claude-opus-4-7" {
 		t.Fatalf("model = %q, want unchanged", *model)
 	}
-	if *validateCalls != 3 {
-		t.Fatalf("validateCalls = %d, want 3 (scan must not re-validate the declined ID)", *validateCalls)
+	if *validateCalls != 6 {
+		t.Fatalf("validateCalls = %d, want 6 (3 for the declined upgrade, scan not re-validating + 3 for the failed health check)", *validateCalls)
 	}
-	if len(*events) != 1 || (*events)[0].Event != "declined" || (*events)[0].Resolver != "gateway" {
+	if len(*events) != 2 || (*events)[0].Event != "declined" || (*events)[0].Resolver != "gateway" ||
+		(*events)[1].Event != "health-check-failed" {
 		t.Fatalf("unexpected events: %+v", *events)
 	}
 }
@@ -541,37 +564,44 @@ func TestRunOnceGatewayCandidateCrossFamilyFallsBack(t *testing.T) {
 	}
 }
 
-// TestRunOnceAlreadyLatest: no newer candidate → no validation, no event.
+// TestRunOnceAlreadyLatest: no newer candidate → no upgrade-stage validation,
+// no event. +1 validate: the always-on health check still probes the current
+// model (default validate fake passes, so no event either).
 func TestRunOnceAlreadyLatest(t *testing.T) {
 	u, model, events, validateCalls, _ := newTestUpdater()
 	u.list = func(context.Context) ([]string, error) {
 		return []string{"us.anthropic.claude-opus-4-7", "us.anthropic.claude-opus-4-5"}, nil
 	}
 	u.runOnce(context.Background())
-	if *model != "us.anthropic.claude-opus-4-7" || *validateCalls != 0 || len(*events) != 0 {
-		t.Fatalf("model=%q validateCalls=%d events=%d — expected full no-op", *model, *validateCalls, len(*events))
+	if *model != "us.anthropic.claude-opus-4-7" || *validateCalls != 1 || len(*events) != 0 {
+		t.Fatalf("model=%q validateCalls=%d events=%d — expected full no-op + 1 health-check validate", *model, *validateCalls, len(*events))
 	}
 }
 
 // TestRunOnceListError: control-plane failure → warn-and-wait, no event.
+// +1 validate: the health check still runs after a list-failed upgrade stage
+// (default validate fake passes, so the model stays healthy and unchanged).
 func TestRunOnceListError(t *testing.T) {
 	u, model, events, validateCalls, _ := newTestUpdater()
 	u.list = func(context.Context) ([]string, error) { return nil, errors.New("throttled") }
 	u.runOnce(context.Background())
-	if *model != "us.anthropic.claude-opus-4-7" || *validateCalls != 0 || len(*events) != 0 {
-		t.Fatalf("expected no-op on list error")
+	if *model != "us.anthropic.claude-opus-4-7" || *validateCalls != 1 || len(*events) != 0 {
+		t.Fatalf("expected no-op + 1 health-check validate on list error")
 	}
 }
 
 // TestRunOnceUnparseableCurrent: configured model outside the modern naming →
-// auto-update silently skips (logged), nothing breaks.
+// auto-update silently skips the upgrade stage (logged), nothing breaks.
+// +1 validate: the health check still probes the (unparseable) current model
+// — the default fake passes, so it stays healthy; recovery is impossible for
+// unparseable models but is never reached here since validate succeeds.
 func TestRunOnceUnparseableCurrent(t *testing.T) {
 	u, _, events, validateCalls, _ := newTestUpdater()
 	cur := "anthropic.claude-3-5-sonnet-20241022-v2:0"
 	u.current = func() string { return cur }
 	u.runOnce(context.Background())
-	if *validateCalls != 0 || len(*events) != 0 {
-		t.Fatal("expected no-op for unparseable current model")
+	if *validateCalls != 1 || len(*events) != 0 {
+		t.Fatal("expected no-op + 1 health-check validate for unparseable current model")
 	}
 }
 
@@ -638,11 +668,15 @@ func TestRunOnceAlwaysLogsSummary(t *testing.T) {
 			wantModel:   "modelInUse=us.anthropic.claude-opus-4-8",
 		},
 		{
+			// The always-failing validate fake also fails the always-on
+			// health check and its one-shot recovery, so the final outcome
+			// is "health-check-failed" (overriding the upgrade stage's
+			// "declined") — same summary-log guarantee, updated outcome.
 			name: "declined",
 			mutate: func(u *autoUpdater) {
 				u.validate = func(context.Context, string) error { return errors.New("denied") }
 			},
-			wantOutcome: "outcome=declined",
+			wantOutcome: "outcome=health-check-failed",
 			wantModel:   "modelInUse=us.anthropic.claude-opus-4-7",
 		},
 		{
@@ -798,6 +832,103 @@ func TestProbeDecodeRoundTrip(t *testing.T) {
 
 	if err := verifyToolProbe(events); err != nil {
 		t.Fatalf("verifyToolProbe: %v", err)
+	}
+}
+
+// Health check passes → nothing new: outcome stays already-latest, exactly
+// one extra validate call (the current-model probe), no events.
+func TestRunOnceHealthCheckHealthy(t *testing.T) {
+	u, model, events, validateCalls, _ := newTestUpdater()
+	u.recoverSwap = func(string) { t.Fatal("recoverSwap must not be called") }
+	u.list = func(context.Context) ([]string, error) { return nil, nil } // no candidates
+	u.runOnce(context.Background())
+	if *model != "us.anthropic.claude-opus-4-7" {
+		t.Fatalf("model = %q, want unchanged", *model)
+	}
+	if *validateCalls != 1 { // health check only
+		t.Fatalf("validateCalls = %d, want 1", *validateCalls)
+	}
+	if len(*events) != 0 {
+		t.Fatalf("events = %d, want 0", len(*events))
+	}
+}
+
+// Current model fails its health check; gateway re-resolve returns the same
+// broken model (rejected via sameModel); catalog scan provides 4-8, which
+// validates → recoverSwap, outcome recovered, "recovered" event.
+func TestRunOnceHealthCheckRecovers(t *testing.T) {
+	u, model, events, _, _ := newTestUpdater()
+	recovered := ""
+	u.recoverSwap = func(m string) { recovered = m; *model = m }
+	u.resolve = func(context.Context) (string, error) { return *model, nil } // "confirms" current
+	u.validate = func(_ context.Context, id string) error {
+		if id == "us.anthropic.claude-opus-4-7" {
+			return errors.New("model deprecated by AWS")
+		}
+		return nil
+	}
+	u.runOnce(context.Background())
+	if recovered != "us.anthropic.claude-opus-4-8" {
+		t.Fatalf("recovered = %q, want 4-8", recovered)
+	}
+	if len(*events) != 1 || (*events)[0].Event != "recovered" ||
+		(*events)[0].From != "us.anthropic.claude-opus-4-7" ||
+		(*events)[0].To != "us.anthropic.claude-opus-4-8" ||
+		(*events)[0].Resolver != "recovery" {
+		t.Fatalf("unexpected events: %+v", *events)
+	}
+}
+
+// A gateway candidate already declined this cycle → recovery is skipped
+// (re-resolving would return the same declined answer): outcome
+// health-check-failed, two events (declined, health-check-failed).
+func TestRunOnceHealthCheckFailedAfterDecline(t *testing.T) {
+	u, model, events, _, _ := newTestUpdater()
+	u.recoverSwap = func(string) { t.Fatal("recoverSwap must not be called") }
+	u.resolve = func(context.Context) (string, error) { return "us.anthropic.claude-opus-4-8", nil }
+	u.validate = func(_ context.Context, _ string) error { return errors.New("everything fails") }
+	u.runOnce(context.Background())
+	if *model != "us.anthropic.claude-opus-4-7" {
+		t.Fatalf("model = %q, want unchanged", *model)
+	}
+	if len(*events) != 2 || (*events)[0].Event != "declined" || (*events)[1].Event != "health-check-failed" {
+		t.Fatalf("unexpected events: %+v", *events)
+	}
+	if (*events)[1].From != "us.anthropic.claude-opus-4-7" || (*events)[1].To != "" || (*events)[1].Error == "" {
+		t.Fatalf("bad health-check-failed payload: %+v", (*events)[1])
+	}
+}
+
+// No recovery candidate anywhere (gateway nil, catalog empty) → outcome
+// health-check-failed, single event.
+func TestRunOnceHealthCheckFailedNoCandidate(t *testing.T) {
+	u, model, events, _, _ := newTestUpdater()
+	u.recoverSwap = func(string) { t.Fatal("recoverSwap must not be called") }
+	u.list = func(context.Context) ([]string, error) { return nil, nil }
+	u.validate = func(_ context.Context, _ string) error { return errors.New("model broken") }
+	u.runOnce(context.Background())
+	if *model != "us.anthropic.claude-opus-4-7" {
+		t.Fatalf("model = %q, want unchanged", *model)
+	}
+	if len(*events) != 1 || (*events)[0].Event != "health-check-failed" {
+		t.Fatalf("unexpected events: %+v", *events)
+	}
+}
+
+// After a validated upgrade the health check is skipped entirely (the model
+// in use was probed seconds ago): validate calls = candidate probes only.
+func TestRunOnceHealthCheckSkippedAfterUpgrade(t *testing.T) {
+	u, model, events, validateCalls, _ := newTestUpdater()
+	u.recoverSwap = func(string) { t.Fatal("recoverSwap must not be called") }
+	u.runOnce(context.Background())
+	if *model != "us.anthropic.claude-opus-4-8" {
+		t.Fatalf("model = %q, want upgraded", *model)
+	}
+	if *validateCalls != 1 { // one candidate probe, zero health-check probes
+		t.Fatalf("validateCalls = %d, want 1", *validateCalls)
+	}
+	if len(*events) != 1 || (*events)[0].Event != "upgraded" {
+		t.Fatalf("unexpected events: %+v", *events)
 	}
 }
 
