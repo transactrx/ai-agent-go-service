@@ -75,6 +75,30 @@ func TestNewerThan(t *testing.T) {
 	}
 }
 
+// TestSameModel covers parsed comparison so the bare and dated forms of one
+// release match; unparseable IDs fall back to string equality.
+func TestSameModel(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"us.anthropic.claude-opus-4-8", "us.anthropic.claude-opus-4-8", true},
+		// bare vs dated form of the same release
+		{"us.anthropic.claude-opus-4-8", "us.anthropic.claude-opus-4-8-20260615-v1:0", true},
+		{"us.anthropic.claude-opus-4-7", "us.anthropic.claude-opus-4-8", false},
+		// different prefix = different model
+		{"us.anthropic.claude-opus-4-8", "global.anthropic.claude-opus-4-8", false},
+		// unparseable falls back to string equality
+		{"arn:aws:bedrock:custom", "arn:aws:bedrock:custom", true},
+		{"arn:aws:bedrock:custom", "us.anthropic.claude-opus-4-8", false},
+	}
+	for _, c := range cases {
+		if got := sameModel(c.a, c.b); got != c.want {
+			t.Errorf("sameModel(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}
+
 // TestLatestCandidate verifies family/prefix filtering, strict-upgrade-only,
 // numeric ordering across many candidates, and tolerance of garbage IDs.
 func TestLatestCandidate(t *testing.T) {

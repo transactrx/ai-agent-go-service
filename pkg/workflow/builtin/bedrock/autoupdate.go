@@ -104,6 +104,18 @@ func latestCandidate(ids []string, current parsedModel) (string, bool) {
 	return bestID, bestID != ""
 }
 
+// sameModel reports whether two IDs refer to the same model release: parsed
+// comparison so the bare and dated forms of one release are not mistaken for
+// different models. Unparseable IDs fall back to string equality.
+func sameModel(a, b string) bool {
+	pa, ea := parseModelID(a)
+	pb, eb := parseModelID(b)
+	if ea != nil || eb != nil {
+		return a == b
+	}
+	return pa == pb
+}
+
 // gatewayCandidateOK rejects gateway answers the updater could not manage
 // afterwards: IDs outside the modern parseable naming (a swap would strand
 // the updater at skipped-unparseable-model until restart) and cross-family
