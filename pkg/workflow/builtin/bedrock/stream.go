@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+	"github.com/aws/smithy-go"
 
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/node"
 )
@@ -24,12 +26,28 @@ func (b *bedrockLLM) Stream(ctx context.Context, req node.LLMRequest, out chan<-
 		return err
 	}
 
-	resp, err := b.client.InvokeModelWithResponseStream(ctx, &bedrockruntime.InvokeModelWithResponseStreamInput{
-		ModelId:     aws.String(model),
-		ContentType: aws.String("application/json"),
-		Accept:      aws.String("application/json"),
-		Body:        payload,
-	})
+	input := func(m string) *bedrockruntime.InvokeModelWithResponseStreamInput {
+		return &bedrockruntime.InvokeModelWithResponseStreamInput{
+			ModelId:     aws.String(m),
+			ContentType: aws.String("application/json"),
+			Accept:      aws.String("application/json"),
+			Body:        payload,
+		}
+	}
+	resp, err := b.client.InvokeModelWithResponseStream(ctx, input(model))
+	if err != nil && isModelUnavailable(err) {
+		// Request-time fallback: the fresh model broke mid-day (deprecated or
+		// removed by AWS after the last check) — retry ONCE with the model
+		// displaced by the last upgrade. Only before any event was emitted;
+		// mid-stream failures are never retried.
+		if lkg := b.lastKnownGoodModel(); lkg != "" && lkg != model {
+			if b.logger != nil {
+				b.logger.Printf("ai/bedrock wf=%s node=%s model %s failed (%v), retrying with last-known-good %s", b.wfID, b.nodeID, model, err, lkg)
+			}
+			model = lkg
+			resp, err = b.client.InvokeModelWithResponseStream(ctx, input(model))
+		}
+	}
 	if err != nil {
 		if b.logger != nil {
 			b.logger.Printf("ai/bedrock invoke failed: wf=%s node=%s model=%s region=%s err=%v", b.wfID, b.nodeID, model, b.cfg.Region, err)
@@ -165,4 +183,19 @@ func emit(ctx context.Context, out chan<- node.LLMEvent, evt node.LLMEvent) {
 	case out <- evt:
 	case <-ctx.Done():
 	}
+}
+
+// isModelUnavailable reports invoke errors that indicate the model ID itself
+// is bad (deprecated, removed, or unentitled) rather than a transient fault —
+// only these justify the last-known-good retry.
+func isModelUnavailable(err error) bool {
+	var ae smithy.APIError
+	if !errors.As(err, &ae) {
+		return false
+	}
+	switch ae.ErrorCode() {
+	case "ValidationException", "ResourceNotFoundException":
+		return true
+	}
+	return false
 }

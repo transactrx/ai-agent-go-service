@@ -59,10 +59,17 @@ var Factory node.Factory = node.FactoryFunc(func(rawConfig json.RawMessage) (nod
 	return &bedrockLLM{cfg: cfg, model: cfg.Model}, nil
 })
 
+// invokeAPI is the one Bedrock Runtime call the node makes — an interface so
+// tests can fake invoke failures without AWS. *bedrockruntime.Client
+// satisfies it.
+type invokeAPI interface {
+	InvokeModelWithResponseStream(ctx context.Context, params *bedrockruntime.InvokeModelWithResponseStreamInput, optFns ...func(*bedrockruntime.Options)) (*bedrockruntime.InvokeModelWithResponseStreamOutput, error)
+}
+
 // bedrockLLM is the node instance.
 type bedrockLLM struct {
 	cfg    Config
-	client *bedrockruntime.Client
+	client invokeAPI
 	logger *log.Logger
 	nodeID string
 	wfID   string
