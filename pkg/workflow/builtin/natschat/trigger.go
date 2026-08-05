@@ -103,6 +103,20 @@ func (t *natsChatTrigger) Subscribe(_ context.Context, sink node.TriggerSink) er
 
 func (t *natsChatTrigger) Close(_ context.Context) error { return nil }
 
+// resolveResponseMode picks the effective mode for one request. The body's
+// responseMode is honored only when the workflow opted in via
+// allowResponseModeOverride; with the flag on, an invalid value is a caller
+// error rather than a silent fallback.
+func (t *natsChatTrigger) resolveResponseMode(requested string) (string, error) {
+	if !t.cfg.AllowResponseModeOverride || requested == "" {
+		return t.cfg.ResponseMode, nil
+	}
+	if requested != responseModeStreaming && requested != responseModeSingle {
+		return "", fmt.Errorf("responseMode must be %q or %q", responseModeStreaming, responseModeSingle)
+	}
+	return requested, nil
+}
+
 // handle is registered with nats-service. It decodes the body, validates
 // identity, allocates a streaming session, hands a TriggerEvent to the sink,
 // and returns Status:302 so nats-service does not auto-respond.
