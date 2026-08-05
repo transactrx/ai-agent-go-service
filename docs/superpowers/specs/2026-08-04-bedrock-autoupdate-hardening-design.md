@@ -84,6 +84,10 @@ State is in-memory: a container restart clears `lastKnownGood`; the startup run 
 
 `health-check-failed` fires **only on conclusive** probe failures (§2): an inconclusive failure (throttle, timeout, 5xx) publishes nothing — it is a fault of the moment, not of the model, and alerting on it would train operators to ignore the event. Cancellation (shutdown) likewise publishes nothing.
 
+### 6. Claude 5-generation payload readiness
+
+5-generation Bedrock models (`claude-opus-5`, `claude-sonnet-5`, …) default to adaptive thinking and reject forced `tool_choice` without an explicit `thinking` setting. The payload builder is model-aware: for parseable model IDs with major ≥ 5 the envelope carries `"thinking": {"type": "disabled"}`; for older or unparseable IDs the envelope is byte-identical to pre-v1.3.0. This keeps 5-gen behavior, token budgets, and tool loops identical to the 4.x generation and makes the probe/health check valid across the generation boundary. `Stream` rebuilds the payload per attempt so a last-known-good retry that crosses generations uses the right envelope for each model. Enabling thinking on 5-gen models is a future, deliberate config feature — never a side effect of an auto-upgrade.
+
 ## Config / env surface (after)
 
 | Item | Where | Default | Notes |
