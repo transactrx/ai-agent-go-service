@@ -41,6 +41,20 @@ Read by the library at startup:
 | `AWS_REGION_DYNAMODB` | — | `us-east-1` | Region for the prompt store |
 | `INFERENCE_GATEWAY_BASE_PATH` | — | `example.inferenceGateway` | Org inferenceGateway NATS base path; `ai/bedrock` auto-update asks `<base>.resolveModel` for the family's latest release (org value: `trx.inferenceGateway`). Unset/unreachable → Bedrock catalog-scan fallback. Set it in the consuming service's deployment env (Terraform task definition or GitHub environment vars). |
 | `MODEL_AUTOUPDATE_NOTIFY_SUBJECT` | — | `<NATS_BASE_PATH>.modelAutoUpdate` | Subject for `ai/bedrock` auto-update upgraded/declined notifications |
+| `AI_BEDROCK_MODEL_ID` | — | `""` | Break-glass: when set, every ai/bedrock node uses this model verbatim and auto-update is fully disabled. Empty = auto mode. |
+
+### `ai/bedrock` auto-update notification events
+
+Notification subject: `MODEL_AUTOUPDATE_NOTIFY_SUBJECT` (or `<NATS_BASE_PATH>.modelAutoUpdate`).
+
+Events (published on `<subject>`, NATS payload is JSON):
+
+- **`upgraded`**: Valid upgrade succeeded. Fields: `workflowId`, `nodeId`, `from`, `to`, `attempts`, `resolver` (`"gateway"` or `"fallback"`), `timestamp`.
+- **`declined`**: Candidate validation failed. Fields: `workflowId`, `nodeId`, `from`, `to`, `attempts`, `error`, `resolver`, `timestamp`.
+- **`recovered`**: Health-check failure triggered recovery and re-resolve succeeded. Fields: `workflowId`, `nodeId`, `from`, `to`, `attempts`, `resolver` (`"recovery"`), `timestamp`.
+- **`health-check-failed`**: Health-check failure with no recovery candidate. Fields: `workflowId`, `nodeId`, `from`, `to` (empty), `attempts`, `error`, `timestamp`.
+
+Schedule: daily check at **07:00 UTC + 0–30 min jitter** (per-container random delay to avoid thundering herd). Startup runs immediately, then daily cycles.
 
 **Workflow-referenced vars** are *not* library-core — they are read by the node configs inside your
 workflow JSON via `${VAR}` / `${VAR:default}`. chatApi's `powerlineSearch.json` references, for
