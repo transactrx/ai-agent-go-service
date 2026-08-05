@@ -719,7 +719,7 @@ func (b *bedrockLLM) validateModel(ctx context.Context, modelID string) error {
 			Content: []node.ContentBlock{{Type: node.BlockText, Text: "ping"}},
 		}},
 	}
-	payload, err := buildAnthropicPayload(req, b.cfg)
+	payload, err := buildAnthropicPayload(req, b.cfg, modelID)
 	if err != nil {
 		return err
 	}

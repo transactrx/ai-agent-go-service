@@ -12,14 +12,17 @@ import (
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/node"
 )
 
-// fakeInvoker records the ModelId of each call and returns scripted errors.
+// fakeInvoker records the ModelId and Body of each call and returns scripted
+// errors.
 type fakeInvoker struct {
 	models []string
+	bodies [][]byte
 	errs   []error
 }
 
 func (f *fakeInvoker) InvokeModelWithResponseStream(_ context.Context, in *bedrockruntime.InvokeModelWithResponseStreamInput, _ ...func(*bedrockruntime.Options)) (*bedrockruntime.InvokeModelWithResponseStreamOutput, error) {
 	f.models = append(f.models, aws.ToString(in.ModelId))
+	f.bodies = append(f.bodies, in.Body)
 	return nil, f.errs[len(f.models)-1]
 }
 

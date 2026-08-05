@@ -21,20 +21,26 @@ func (b *bedrockLLM) Stream(ctx context.Context, req node.LLMRequest, out chan<-
 	defer close(out)
 	model := b.currentModel()
 
-	payload, err := buildAnthropicPayload(req, b.cfg)
-	if err != nil {
-		return err
-	}
-
-	input := func(m string) *bedrockruntime.InvokeModelWithResponseStreamInput {
+	// The envelope is model-aware (5-generation models need thinking:disabled),
+	// and the last-known-good retry can cross a generation boundary, so the
+	// payload is built per attempt from that attempt's model ID.
+	makeInput := func(m string) (*bedrockruntime.InvokeModelWithResponseStreamInput, error) {
+		payload, err := buildAnthropicPayload(req, b.cfg, m)
+		if err != nil {
+			return nil, err
+		}
 		return &bedrockruntime.InvokeModelWithResponseStreamInput{
 			ModelId:     aws.String(m),
 			ContentType: aws.String("application/json"),
 			Accept:      aws.String("application/json"),
 			Body:        payload,
-		}
+		}, nil
 	}
-	resp, err := b.client.InvokeModelWithResponseStream(ctx, input(model))
+	in, err := makeInput(model)
+	if err != nil {
+		return err
+	}
+	resp, err := b.client.InvokeModelWithResponseStream(ctx, in)
 	if err != nil && isModelUnavailable(err) {
 		// Request-time fallback: the fresh model broke mid-day (deprecated or
 		// removed by AWS after the last check) — retry ONCE with the model
@@ -44,8 +50,17 @@ func (b *bedrockLLM) Stream(ctx context.Context, req node.LLMRequest, out chan<-
 			if b.logger != nil {
 				b.logger.Printf("ai/bedrock wf=%s node=%s model %s failed (%v), retrying with last-known-good %s", b.wfID, b.nodeID, model, err, lkg)
 			}
-			model = lkg
-			resp, err = b.client.InvokeModelWithResponseStream(ctx, input(model))
+			// A build failure here cannot happen in practice (same request),
+			// but must never mask the original invoke error.
+			lkgIn, buildErr := makeInput(lkg)
+			if buildErr != nil {
+				if b.logger != nil {
+					b.logger.Printf("ai/bedrock wf=%s node=%s last-known-good %s payload build failed: %v (keeping original error)", b.wfID, b.nodeID, lkg, buildErr)
+				}
+			} else {
+				model = lkg
+				resp, err = b.client.InvokeModelWithResponseStream(ctx, lkgIn)
+			}
 		}
 	}
 	if err != nil {

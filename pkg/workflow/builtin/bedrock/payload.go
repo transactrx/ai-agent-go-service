@@ -9,8 +9,11 @@ import (
 )
 
 // buildAnthropicPayload converts an LLMRequest to the Bedrock-Anthropic JSON
-// envelope used by InvokeModelWithResponseStream.
-func buildAnthropicPayload(req node.LLMRequest, cfg Config) ([]byte, error) {
+// envelope used by InvokeModelWithResponseStream. modelID is the model the
+// envelope is destined for — the envelope is version-aware (see the thinking
+// gate below), so callers must pass the ID of the model they are about to
+// invoke, not necessarily cfg.Model.
+func buildAnthropicPayload(req node.LLMRequest, cfg Config, modelID string) ([]byte, error) {
 	type textBlock struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
@@ -59,15 +62,19 @@ func buildAnthropicPayload(req node.LLMRequest, cfg Config) ([]byte, error) {
 		Type string `json:"type"`
 		Name string `json:"name"`
 	}
+	type thinkingConfig struct {
+		Type string `json:"type"`
+	}
 	type envelope struct {
-		AnthropicVersion string      `json:"anthropic_version"`
-		MaxTokens        int         `json:"max_tokens"`
-		Temperature      *float64    `json:"temperature,omitempty"`
-		System           string      `json:"system,omitempty"`
-		Messages         []message   `json:"messages"`
-		Tools            []tool      `json:"tools,omitempty"`
-		ToolChoice       *toolChoice `json:"tool_choice,omitempty"`
-		StopSequences    []string    `json:"stop_sequences,omitempty"`
+		AnthropicVersion string          `json:"anthropic_version"`
+		MaxTokens        int             `json:"max_tokens"`
+		Temperature      *float64        `json:"temperature,omitempty"`
+		System           string          `json:"system,omitempty"`
+		Messages         []message       `json:"messages"`
+		Tools            []tool          `json:"tools,omitempty"`
+		ToolChoice       *toolChoice     `json:"tool_choice,omitempty"`
+		Thinking         *thinkingConfig `json:"thinking,omitempty"`
+		StopSequences    []string        `json:"stop_sequences,omitempty"`
 	}
 
 	maxTok := cfg.MaxTokens
@@ -139,6 +146,15 @@ func buildAnthropicPayload(req node.LLMRequest, cfg Config) ([]byte, error) {
 	}
 	if req.ToolChoiceName != "" {
 		env.ToolChoice = &toolChoice{Type: "tool", Name: req.ToolChoiceName}
+	}
+	// Claude 5-generation models run adaptive thinking by default and reject
+	// forced tool_choice unless thinking is explicitly disabled. We disable it
+	// for 5+ so behavior, token budget, and multi-turn tool loops stay exactly
+	// as on the 4.x generation; enabling thinking becomes a deliberate future
+	// config feature, never a side effect of an auto-upgrade. Older and
+	// unparseable model IDs get a byte-identical envelope to before.
+	if p, err := parseModelID(modelID); err == nil && p.major >= 5 {
+		env.Thinking = &thinkingConfig{Type: "disabled"}
 	}
 	return json.Marshal(env)
 }

@@ -9,6 +9,10 @@ import (
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/node"
 )
 
+// testModelGen4 keeps these envelope expectations on the 4.x generation, whose
+// payload must stay byte-identical to pre-v1.3.0.
+const testModelGen4 = "us.anthropic.claude-opus-4-7"
+
 // TestBuildPayloadImageBlock verifies image content blocks are emitted as the
 // Anthropic-on-Bedrock {type:"image", source:{type:"base64", media_type, data}}
 // shape with base64-encoded bytes.
@@ -24,7 +28,7 @@ func TestBuildPayloadImageBlock(t *testing.T) {
 			},
 		}},
 	}
-	body, err := buildAnthropicPayload(req, cfg)
+	body, err := buildAnthropicPayload(req, cfg, testModelGen4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +68,7 @@ func TestBuildPayloadDocumentBlock(t *testing.T) {
 			},
 		}},
 	}
-	body, err := buildAnthropicPayload(req, cfg)
+	body, err := buildAnthropicPayload(req, cfg, testModelGen4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +96,7 @@ func TestBuildPayloadSimpleUserMessage(t *testing.T) {
 		},
 		MaxTokens: 4096,
 	}
-	body, err := buildAnthropicPayload(req, cfg)
+	body, err := buildAnthropicPayload(req, cfg, testModelGen4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +131,7 @@ func TestBuildPayloadIncludesTools(t *testing.T) {
 			{Name: "T", Description: "desc", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		},
 	}
-	body, err := buildAnthropicPayload(req, cfg)
+	body, err := buildAnthropicPayload(req, cfg, testModelGen4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +160,7 @@ func TestBuildAnthropicPayloadToolChoice(t *testing.T) {
 	t.Run("set", func(t *testing.T) {
 		req := base
 		req.ToolChoiceName = "echo"
-		body, err := buildAnthropicPayload(req, cfg)
+		body, err := buildAnthropicPayload(req, cfg, testModelGen4)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -175,7 +179,7 @@ func TestBuildAnthropicPayloadToolChoice(t *testing.T) {
 
 	t.Run("unset", func(t *testing.T) {
 		req := base
-		body, err := buildAnthropicPayload(req, cfg)
+		body, err := buildAnthropicPayload(req, cfg, testModelGen4)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -197,7 +201,7 @@ func TestBuildPayloadAssistantToolUseAndUserToolResult(t *testing.T) {
 			}},
 		},
 	}
-	body, err := buildAnthropicPayload(req, cfg)
+	body, err := buildAnthropicPayload(req, cfg, testModelGen4)
 	if err != nil {
 		t.Fatal(err)
 	}
