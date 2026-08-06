@@ -10,13 +10,19 @@ Every workflow registers ONE NATS subject: `<NATS_BASE_PATH>.<workflowId>` (or t
 trigger's `subject` config when set). The same subject serves both response modes —
 which one you get is decided per request:
 
-1. The workflow's trigger config `responseMode` (`"streaming"` or `"single"`) is the
-   default.
+1. The workflow's trigger config `responseMode` sets that endpoint's default
+   delivery. It is a REQUIRED field with exactly two legal values — `"streaming"`
+   or `"single"` — and there is no implicit fallback: a workflow file without it
+   (or with any other value) is rejected at load time. Whatever the file says is
+   what every request gets unless overridden per rule 2. (Deployed examples: the
+   PowerLine UI workflows set `"streaming"`; the machine-caller `Agent*` workflows
+   set `"single"`.)
 2. If — and only if — the workflow's trigger config sets
-   `allowResponseModeOverride: true` (added in v1.4.0, default false), the request
-   body's `responseMode` field overrides the default for that one request. On
-   workflows without the flag the body field is silently ignored, so existing
-   deployments cannot change behavior by accident.
+   `allowResponseModeOverride: true` (added in v1.4.0; this flag DOES have a
+   default: false), the request body's `responseMode` field overrides the
+   configured default for that one request. On workflows without the flag the body
+   field is silently ignored, so existing deployments cannot change behavior by
+   accident.
 
 Mode selects DELIVERY only. The agent run underneath (LLM, tools, policy scoping,
 session memory) is identical in both modes.
