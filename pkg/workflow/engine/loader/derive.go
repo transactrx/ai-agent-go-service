@@ -218,7 +218,30 @@ func mergeConnections(derivedID string, base, overlay []map[string]any, nodes []
 	return out, nil
 }
 
-// enforcePromptOwnership is implemented in Task 3 (prompt carve-out).
+// enforcePromptOwnership implements the spec's prompt carve-out: ai/agent
+// prompt fields are never inherited from the base. Every ai/agent node in
+// the merged document must have BOTH systemMessageFixed and
+// systemMessageFlexible supplied as non-empty strings by the overlay itself.
 func enforcePromptOwnership(derivedID string, merged []map[string]any, overlay []map[string]any) error {
+	overlayPrompts := map[string]map[string]any{}
+	for _, on := range overlay {
+		id, _ := on["id"].(string)
+		cfg, _ := on["config"].(map[string]any)
+		overlayPrompts[id] = cfg
+	}
+	for _, n := range merged {
+		if t, _ := n["type"].(string); t != "ai/agent" {
+			continue
+		}
+		id, _ := n["id"].(string)
+		cfg := overlayPrompts[id]
+		fixed, _ := cfg["systemMessageFixed"].(string)
+		flex, _ := cfg["systemMessageFlexible"].(string)
+		if fixed == "" || flex == "" {
+			return fmt.Errorf(
+				"derived workflow %q: node %q (ai/agent): systemMessageFixed and systemMessageFlexible must be defined in the derived file — prompts are never inherited",
+				derivedID, id)
+		}
+	}
 	return nil
 }

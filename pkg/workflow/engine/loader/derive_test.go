@@ -217,3 +217,74 @@ func TestMergeDerivedErrors(t *testing.T) {
 		})
 	}
 }
+
+const baseWithAgent = `{
+  "id": "abase", "version": 1, "trigger": "t1",
+  "nodes": [
+    {"id": "t1", "type": "trigger/nats-chat", "config": {}},
+    {"id": "agent1", "type": "ai/agent",
+     "config": {"systemMessageFixed": "base fixed", "systemMessageFlexible": "base flex"}}
+  ],
+  "connections": [{"from": {"node": "t1", "port": "out"}, "to": {"node": "agent1", "port": "in"}}]
+}`
+
+func TestPromptCarveOutMissingPromptsFails(t *testing.T) {
+	cases := []struct{ name, overlay string }{
+		{"agent not in overlay at all", `{"id":"d","extends":"abase"}`},
+		{"only fixed supplied", `{"id":"d","extends":"abase","nodes":[{"id":"agent1","config":{"systemMessageFixed":"own"}}]}`},
+		{"only flexible supplied", `{"id":"d","extends":"abase","nodes":[{"id":"agent1","config":{"systemMessageFlexible":"own"}}]}`},
+		{"empty string fixed", `{"id":"d","extends":"abase","nodes":[{"id":"agent1","config":{"systemMessageFixed":"","systemMessageFlexible":"own"}}]}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := MergeDerived([]byte(baseWithAgent), []byte(c.overlay))
+			if err == nil {
+				t.Fatal("want prompt-ownership error, got nil")
+			}
+			if !strings.Contains(err.Error(), "prompts are never inherited") {
+				t.Fatalf("wrong error: %v", err)
+			}
+		})
+	}
+}
+
+func TestPromptCarveOutSatisfied(t *testing.T) {
+	doc := mustMergeWith(t, baseWithAgent, `{
+	  "id": "d", "extends": "abase",
+	  "nodes": [{"id": "agent1", "config": {
+	    "systemMessageFixed": "own fixed", "systemMessageFlexible": "own flex"}}]
+	}`)
+	cfg := nodesByID(doc)["agent1"]["config"].(map[string]any)
+	if cfg["systemMessageFixed"] != "own fixed" || cfg["systemMessageFlexible"] != "own flex" {
+		t.Fatalf("overlay prompts must win: %v", cfg)
+	}
+}
+
+func TestPromptCarveOutRemovedAgentNotRequired(t *testing.T) {
+	if _, err := MergeDerived([]byte(baseWithAgent),
+		[]byte(`{"id":"d","extends":"abase","nodes":[{"id":"agent1","$remove":true}]}`)); err != nil {
+		t.Fatalf("removed agent must not demand prompts: %v", err)
+	}
+}
+
+func TestPromptCarveOutAppendedAgentRequiresPrompts(t *testing.T) {
+	_, err := MergeDerived([]byte(baseDoc),
+		[]byte(`{"id":"d","extends":"base","nodes":[{"id":"agent9","type":"ai/agent","config":{}}]}`))
+	if err == nil || !strings.Contains(err.Error(), "prompts are never inherited") {
+		t.Fatalf("appended agent without prompts must fail, got: %v", err)
+	}
+}
+
+// mustMergeWith is mustMerge with a custom base.
+func mustMergeWith(t *testing.T, base, overlay string) map[string]any {
+	t.Helper()
+	merged, err := MergeDerived([]byte(base), []byte(overlay))
+	if err != nil {
+		t.Fatalf("MergeDerived: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(merged, &doc); err != nil {
+		t.Fatalf("merged output not JSON: %v", err)
+	}
+	return doc
+}
