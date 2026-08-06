@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -125,13 +127,20 @@ func writeFile(t *testing.T, dir, name, content string) {
 // the fake trigger/agent node types registered.
 func newTestEngine(t *testing.T, dir string) *engine.Engine {
 	t.Helper()
+	return newTestEngineWithLogger(t, dir, log.New(io.Discard, "", 0))
+}
+
+// newTestEngineWithLogger is like newTestEngine but lets the caller supply
+// (and later inspect) the logger — used to assert on log output.
+func newTestEngineWithLogger(t *testing.T, dir string, logger *log.Logger) *engine.Engine {
+	t.Helper()
 	reg := node.NewRegistry()
 	_ = reg.Register("test/trigger", node.FactoryFunc(func(_ json.RawMessage) (node.Node, error) { return &fakeTrigger{}, nil }))
 	_ = reg.Register("test/agent", node.FactoryFunc(func(_ json.RawMessage) (node.Node, error) { return &fakeAgent{}, nil }))
 	eng, err := engine.New(engine.Config{
 		Source:   engine.NewFilesystemSource(dir),
 		Registry: reg,
-		Logger:   log.New(io.Discard, "", 0),
+		Logger:   logger,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -175,7 +184,9 @@ func TestLoadAllDerivedFailuresAreIsolated(t *testing.T) {
 	writeFile(t, dir, "base.json", testBaseWorkflow)
 	writeFile(t, dir, "orphan.json", `{"id": "orphan", "extends": "missing"}`)
 	writeFile(t, dir, "chained.json", `{"id": "chained", "extends": "orphan"}`)
-	eng := newTestEngine(t, dir)
+
+	var logBuf bytes.Buffer
+	eng := newTestEngineWithLogger(t, dir, log.New(&logBuf, "", 0))
 	_ = eng.LoadAll(context.Background())
 	if _, ok := eng.Workflow("base"); !ok {
 		t.Fatal("healthy base must load despite broken derived siblings")
@@ -185,6 +196,16 @@ func TestLoadAllDerivedFailuresAreIsolated(t *testing.T) {
 	}
 	if _, ok := eng.Workflow("chained"); ok {
 		t.Fatal("chained extends must not register")
+	}
+
+	logOutput := logBuf.String()
+	const wantMissingBase = `extends "missing": base workflow not found`
+	if !strings.Contains(logOutput, wantMissingBase) {
+		t.Fatalf("log output missing exact missing-base message %q; got:\n%s", wantMissingBase, logOutput)
+	}
+	const wantChained = `extends "orphan": base is itself derived (chained extends is not supported)`
+	if !strings.Contains(logOutput, wantChained) {
+		t.Fatalf("log output missing exact chained-extends message %q; got:\n%s", wantChained, logOutput)
 	}
 }
 
