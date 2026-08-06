@@ -113,6 +113,81 @@ func TestEngineLoadsWorkflowAndRoutesTriggerEventToAgent(t *testing.T) {
 	}
 }
 
+// writeFile writes content to dir/name, failing the test on error.
+func writeFile(t *testing.T, dir, name, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// newTestEngine builds an Engine over a FilesystemSource rooted at dir, with
+// the fake trigger/agent node types registered.
+func newTestEngine(t *testing.T, dir string) *engine.Engine {
+	t.Helper()
+	reg := node.NewRegistry()
+	_ = reg.Register("test/trigger", node.FactoryFunc(func(_ json.RawMessage) (node.Node, error) { return &fakeTrigger{}, nil }))
+	_ = reg.Register("test/agent", node.FactoryFunc(func(_ json.RawMessage) (node.Node, error) { return &fakeAgent{}, nil }))
+	eng, err := engine.New(engine.Config{
+		Source:   engine.NewFilesystemSource(dir),
+		Registry: reg,
+		Logger:   log.New(io.Discard, "", 0),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return eng
+}
+
+const testBaseWorkflow = `{
+  "id": "base", "version": 1, "trigger": "t1",
+  "nodes": [
+    {"id": "t1", "type": "test/trigger", "config": {"mode": "streaming"}},
+    {"id": "a1", "type": "test/agent", "config": {"greeting": "bf"}}
+  ],
+  "connections": [{"from": {"node": "t1", "port": "main"}, "to": {"node": "a1", "port": "main"}}]
+}`
+
+func TestLoadAllResolvesDerivedWorkflow(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "base.json", testBaseWorkflow)
+	writeFile(t, dir, "derived.json", `{
+	  "id": "derived", "extends": "base",
+	  "nodes": [
+	    {"id": "t1", "config": {"mode": "single"}},
+	    {"id": "a1", "config": {"greeting": "df"}}
+	  ]
+	}`)
+	eng := newTestEngine(t, dir)
+	if err := eng.LoadAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := eng.Workflow("base"); !ok {
+		t.Fatal("base workflow missing")
+	}
+	if _, ok := eng.Workflow("derived"); !ok {
+		t.Fatal("derived workflow missing")
+	}
+}
+
+func TestLoadAllDerivedFailuresAreIsolated(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "base.json", testBaseWorkflow)
+	writeFile(t, dir, "orphan.json", `{"id": "orphan", "extends": "missing"}`)
+	writeFile(t, dir, "chained.json", `{"id": "chained", "extends": "orphan"}`)
+	eng := newTestEngine(t, dir)
+	_ = eng.LoadAll(context.Background())
+	if _, ok := eng.Workflow("base"); !ok {
+		t.Fatal("healthy base must load despite broken derived siblings")
+	}
+	if _, ok := eng.Workflow("orphan"); ok {
+		t.Fatal("workflow with missing base must not register")
+	}
+	if _, ok := eng.Workflow("chained"); ok {
+		t.Fatal("chained extends must not register")
+	}
+}
+
 type recordingSink struct {
 	mu     sync.Mutex
 	events []node.StreamEvent
