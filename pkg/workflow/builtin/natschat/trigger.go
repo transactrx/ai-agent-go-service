@@ -69,26 +69,51 @@ func (t *natsChatTrigger) Init(_ context.Context, env node.NodeEnv) error {
 		{Name: t.cfg.IdentitySource.TimeZoneHeader, Description: "IANA timezone of the asker; used to resolve date questions like 'today'", Required: false, Example: "America/New_York"},
 		{Name: t.cfg.IdentitySource.NatsUserHeader, Description: "Calling service identity; set automatically by the nats-service client", Required: false, Example: "powerlineWebApp"},
 	}
+	params := []nats_service.ParameterDoc{
+		{Name: "message", Description: "The user's question for the agent", Required: true, Example: "How are the transactions doing today?"},
+		{Name: "sessionId", Description: "Conversation id — omit on the first message; the server generates one and returns it (start event when streaming, sessionId field when single)", Required: false, Example: "e1f0c9a2-4b7d-4f7e-9c1a-8f2d3e4a5b6c"},
+	}
+	if t.cfg.AllowResponseModeOverride {
+		params = append(params, nats_service.ParameterDoc{
+			Name: "responseMode",
+			Description: fmt.Sprintf("Per-request response mode: %q returns ONE reply with the final answer; %q streams events on the reply inbox. Default for this workflow: %q.",
+				responseModeSingle, responseModeStreaming, t.cfg.ResponseMode),
+			Required: false,
+			Example:  responseModeSingle,
+		})
+	}
+
+	respDoc := &nats_service.ResponseDoc{
+		Description: "Stream of NATS events on the reply inbox: start → (delta | thought | tool_call | tool_result | attachment)* → complete | error. " +
+			"Event type is in the _Stream_Event header, ordering in _Stream_Sequence. " +
+			"The start event carries _Stream_Cancel_Subject — publish any message on that subject to cancel. " +
+			"The example below shows each event type's payload.",
+		ContentType: "application/json",
+		Example:     `{"start": {"sessionId": "e1f0c9a2-4b7d-4f7e-9c1a-8f2d3e4a5b6c"}, "delta": {"text": "Today you have 1,204 paid claims..."}, "tool_call": {"toolUseId": "toolu_01", "name": "opensearch_query", "input": {"query": "..."}}, "tool_result": {"toolUseId": "toolu_01", "output": {"hits": "..."}, "isError": false}, "complete": {"finalText": "Today you have 1,204 paid claims...", "messageStop": "end_turn"}, "error": {"code": "cancelled", "message": "stream cancelled by client"}}`,
+	}
+	endpointDesc := fmt.Sprintf(
+		"AI chat endpoint for workflow '%s'. Streams the agent's answer as NATS events on the reply inbox. ",
+		t.workflowID)
+	if t.cfg.ResponseMode == responseModeSingle {
+		respDoc = &nats_service.ResponseDoc{
+			Description: "One reply with the agent's final answer. Set your NATS request timeout at or above this workflow's requestTimeoutSeconds — agent runs can take minutes. " +
+				"Send responseMode:\"streaming\" in the body (when this workflow allows the override) to get the event-stream protocol instead.",
+			ContentType: "application/json",
+			Example:     `{"sessionId": "e1f0c9a2-4b7d-4f7e-9c1a-8f2d3e4a5b6c", "finalText": "Today you have 1,204 paid claims...", "stopReason": "end_turn", "attachments": []}`,
+		}
+		endpointDesc = fmt.Sprintf(
+			"AI chat endpoint for workflow '%s'. Returns the agent's final answer as a single reply. ",
+			t.workflowID)
+	}
+
 	reg := nats_service.EndpointRegistration{
 		Path: t.subject,
-		Description: fmt.Sprintf(
-			"AI chat endpoint for workflow '%s'. Streams the agent's answer as NATS events on the reply inbox. ",
-			t.workflowID) +
+		Description: endpointDesc +
 			`Example body: {"message":"How are the transactions doing today?","sessionId":"e1f0c9a2-4b7d-4f7e-9c1a-8f2d3e4a5b6c"}`,
-		Parameters: []nats_service.ParameterDoc{
-			{Name: "message", Description: "The user's question for the agent", Required: true, Example: "How are the transactions doing today?"},
-			{Name: "sessionId", Description: "Conversation id — omit on the first message; the server generates one and returns it in the start event", Required: false, Example: "e1f0c9a2-4b7d-4f7e-9c1a-8f2d3e4a5b6c"},
-		},
-		Headers: headerDocs,
-		Response: &nats_service.ResponseDoc{
-			Description: "Stream of NATS events on the reply inbox: start → (delta | thought | tool_call | tool_result | attachment)* → complete | error. " +
-				"Event type is in the _Stream_Event header, ordering in _Stream_Sequence. " +
-				"The start event carries _Stream_Cancel_Subject — publish any message on that subject to cancel. " +
-				"The example below shows each event type's payload.",
-			ContentType: "application/json",
-			Example:     `{"start": {"sessionId": "e1f0c9a2-4b7d-4f7e-9c1a-8f2d3e4a5b6c"}, "delta": {"text": "Today you have 1,204 paid claims..."}, "tool_call": {"toolUseId": "toolu_01", "name": "opensearch_query", "input": {"query": "..."}}, "tool_result": {"toolUseId": "toolu_01", "output": {"hits": "..."}, "isError": false}, "complete": {"finalText": "Today you have 1,204 paid claims...", "messageStop": "end_turn"}, "error": {"code": "cancelled", "message": "stream cancelled by client"}}`,
-		},
-		Handler: t.handle,
+		Parameters: params,
+		Headers:    headerDocs,
+		Response:   respDoc,
+		Handler:    t.handle,
 	}
 	return t.natsHost.AddEndpointWithDocs([]nats_service.EndpointRegistration{reg})
 }
@@ -102,6 +127,20 @@ func (t *natsChatTrigger) Subscribe(_ context.Context, sink node.TriggerSink) er
 }
 
 func (t *natsChatTrigger) Close(_ context.Context) error { return nil }
+
+// resolveResponseMode picks the effective mode for one request. The body's
+// responseMode is honored only when the workflow opted in via
+// allowResponseModeOverride; with the flag on, an invalid value is a caller
+// error rather than a silent fallback.
+func (t *natsChatTrigger) resolveResponseMode(requested string) (string, error) {
+	if !t.cfg.AllowResponseModeOverride || requested == "" {
+		return t.cfg.ResponseMode, nil
+	}
+	if requested != responseModeStreaming && requested != responseModeSingle {
+		return "", fmt.Errorf("responseMode must be %q or %q", responseModeStreaming, responseModeSingle)
+	}
+	return requested, nil
+}
 
 // handle is registered with nats-service. It decodes the body, validates
 // identity, allocates a streaming session, hands a TriggerEvent to the sink,
@@ -175,7 +214,11 @@ func (t *natsChatTrigger) handle(msg *nats_service.NatsMessage) *nats_service.Na
 		return serverErr(errcode.ExecutorFailed, "trigger sink not yet wired", 500)
 	}
 
-	if t.cfg.ResponseMode == responseModeStreaming {
+	mode, modeErr := t.resolveResponseMode(body.ResponseMode)
+	if modeErr != nil {
+		return validationErr(errcode.BadRequest, modeErr.Error(), 400)
+	}
+	if mode == responseModeStreaming {
 		return t.handleStreaming(msg, body, id, sink)
 	}
 	return t.handleSingle(msg, body, id, sink)
@@ -216,42 +259,51 @@ func (t *natsChatTrigger) handleStreaming(msg *nats_service.NatsMessage, body ch
 	return &nats_service.NatsServiceError{Status: 302}
 }
 
+// handleSingle serves responseMode "single": the whole agent run happens
+// inline (sink.Emit is synchronous) with a collectSink standing in for the
+// stream, and the terminator becomes the one NATS reply. Client-only UI tools
+// cannot round-trip here — without a stream session AwaitClientToolResult
+// fails fast and the model recovers (see engine/nodeenv.go).
 func (t *natsChatTrigger) handleSingle(msg *nats_service.NatsMessage, body chatRequestBody, id identity.Identity, sink node.TriggerSink) *nats_service.NatsServiceError {
-	resp := make(chan struct {
-		body    []byte
-		headers map[string]string
-		err     error
-	}, 1)
-	reply := node.ReplyFunc(func(_ context.Context, b []byte, h map[string]string) error {
-		resp <- struct {
-			body    []byte
-			headers map[string]string
-			err     error
-		}{body: b, headers: h}
-		return nil
-	})
+	cs := newCollectSink(body.SessionID)
 	evt := node.TriggerEvent{
-		RequestID: msg.MessageId,
-		Identity:  id,
-		SessionID: body.SessionID,
-		Body:      msg.Body,
-		Headers:   natsHeaderMap(msg.Header),
-		Reply:     reply,
-		Done:      make(chan struct{}),
+		RequestID:  msg.MessageId,
+		Identity:   id,
+		SessionID:  body.SessionID,
+		Body:       msg.Body,
+		Headers:    natsHeaderMap(msg.Header),
+		StreamSink: cs,
+		Done:       make(chan struct{}),
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), t.requestTimeout)
 	defer cancel()
-	if err := sink.Emit(ctx, evt); err != nil {
-		return serverErr(errcode.ExecutorFailed, err.Error(), 500)
+
+	toReply := func(r singleResult) *nats_service.NatsServiceError {
+		if r.errCode != "" {
+			if r.errCode == errcode.Cancelled && ctx.Err() != nil {
+				return serverErr(errcode.Timeout, "request timeout", 504)
+			}
+			return serverErr(r.errCode, r.errMessage, 500)
+		}
+		msg.ResponseBody = r.body
+		return nil
+	}
+
+	emitErr := sink.Emit(ctx, evt)
+
+	// The agent's terminator (delivered via cs.Close inside Emit) is the most
+	// precise outcome — prefer it over Emit's wrapped error when both exist.
+	select {
+	case r := <-cs.done:
+		return toReply(r)
+	default:
+	}
+	if emitErr != nil {
+		return serverErr(errcode.ExecutorFailed, emitErr.Error(), 500)
 	}
 	select {
-	case r := <-resp:
-		// NatsMessage uses ResponseBody / ResponseHeader (not RespBody / RespHeader)
-		msg.ResponseBody = r.body
-		for k, v := range r.headers {
-			msg.ResponseHeader.Set(k, v)
-		}
-		return nil
+	case r := <-cs.done:
+		return toReply(r)
 	case <-ctx.Done():
 		return serverErr(errcode.Timeout, "request timeout", 504)
 	}

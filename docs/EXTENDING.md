@@ -109,7 +109,8 @@ engine internals — all coupling goes through the `NodeEnv` passed to `Init` (l
 
 **Built-in node types** (registered automatically, no wiring needed):
 
-- **Trigger:** `trigger/nats-chat`
+- **Trigger:** `trigger/nats-chat` — caller-facing contract of the endpoints it registers
+  (request shape, single vs streaming consumption): [CHAT-ENDPOINTS.md](CHAT-ENDPOINTS.md)
 - **LLM:** `ai/bedrock` (Claude via AWS Bedrock, optional daily model auto-update)
 - **Agent orchestrator:** `ai/agent` (the LLM↔tool loop; `maxIterations`, fixed + admin-tunable system prompt)
 - **Memory:** `memory/postgres`, `memory/dynamodb`
