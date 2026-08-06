@@ -15,7 +15,7 @@ which one you get is decided per request:
    or `"single"` — and there is no implicit fallback: a workflow file without it
    (or with any other value) is rejected at load time. Whatever the file says is
    what every request gets unless overridden per rule 2. (Deployed examples: the
-   PowerLine UI workflows set `"streaming"`; the machine-caller `Agent*` workflows
+   PowerLine UI workflows set `"streaming"`; the machine-caller `Single*` workflows
    set `"single"`.)
 2. If — and only if — the workflow's trigger config sets
    `allowResponseModeOverride: true` (added in v1.4.0; this flag DOES have a
