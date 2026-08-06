@@ -1,8 +1,17 @@
 package natschat
 
 import (
+	"context"
 	"encoding/json"
+	"io"
+	"log"
 	"testing"
+	"time"
+
+	"github.com/nats-io/nats.go"
+
+	"github.com/transactrx/ai-agent-go-service/pkg/transport/natsstream"
+	"github.com/transactrx/ai-agent-go-service/pkg/workflow/node"
 )
 
 // newTestTrigger builds a trigger through the real Factory so config defaults
@@ -59,5 +68,92 @@ func TestChatRequestBodyParsesResponseMode(t *testing.T) {
 	}
 	if b.ResponseMode != "single" {
 		t.Errorf("ResponseMode = %q, want %q", b.ResponseMode, "single")
+	}
+}
+
+// completeSink closes the request's StreamSink with a fixed answer —
+// reaching it proves handle() dispatched to the SINGLE path.
+func completeSink(text string) sinkFunc {
+	return func(ctx context.Context, evt node.TriggerEvent) error {
+		return evt.StreamSink.Close(ctx, node.StreamEvent{
+			Type: node.StreamComplete,
+			Data: natsstream.MustJSON(natsstream.CompletePayload{FinalText: text, MessageStop: "end_turn"}),
+		})
+	}
+}
+
+func handleReadyTrigger(t *testing.T, cfgJSON string, sink sinkFunc) *natsChatTrigger {
+	t.Helper()
+	tr := newTestTrigger(t, cfgJSON)
+	tr.logger = log.New(io.Discard, "", 0)
+	tr.requestTimeout = 2 * time.Second
+	tr.sink = sink
+	return tr
+}
+
+func identityHeaders() nats.Header {
+	return nats.Header{"X-Account-Id": {"a1"}, "X-User-Id": {"u1"}}
+}
+
+func TestHandleDispatchesSingleByDefaultAndMintsSession(t *testing.T) {
+	tr := handleReadyTrigger(t, `{"responseMode":"single"}`, completeSink("ok"))
+	msg := testMsg(`{"message":"q"}`)
+	msg.Header = identityHeaders()
+	if res := tr.handle(msg); res != nil {
+		t.Fatalf("handle: %+v", res)
+	}
+	var resp singleResponseBody
+	if err := json.Unmarshal(msg.ResponseBody, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.FinalText != "ok" {
+		t.Errorf("finalText = %q", resp.FinalText)
+	}
+	if resp.SessionID == "" {
+		t.Error("expected server-minted sessionId in single reply")
+	}
+}
+
+func TestHandleOverrideIgnoredWhenFlagOff(t *testing.T) {
+	// Body asks for streaming but the workflow did not opt in: the single
+	// config default must win. (This is the webapp-safety property inverted:
+	// a config that doesn't opt in can never change modes per request.)
+	tr := handleReadyTrigger(t, `{"responseMode":"single"}`, completeSink("ok"))
+	msg := testMsg(`{"message":"q","responseMode":"streaming"}`)
+	msg.Header = identityHeaders()
+	if res := tr.handle(msg); res != nil {
+		t.Fatalf("handle: %+v", res)
+	}
+	if len(msg.ResponseBody) == 0 {
+		t.Fatal("expected single-mode reply body (streaming would leave it empty)")
+	}
+}
+
+func TestHandleOverrideToSingleWhenFlagOn(t *testing.T) {
+	tr := handleReadyTrigger(t, `{"responseMode":"streaming","allowResponseModeOverride":true}`, completeSink("ok"))
+	msg := testMsg(`{"message":"q","responseMode":"single"}`)
+	msg.Header = identityHeaders()
+	if res := tr.handle(msg); res != nil {
+		t.Fatalf("handle: %+v", res)
+	}
+	if len(msg.ResponseBody) == 0 {
+		t.Fatal("expected single-mode reply body")
+	}
+}
+
+func TestHandleInvalidOverrideRejectedWhenFlagOn(t *testing.T) {
+	tr := handleReadyTrigger(t, `{"responseMode":"single","allowResponseModeOverride":true}`,
+		sinkFunc(func(ctx context.Context, evt node.TriggerEvent) error {
+			t.Fatal("sink must not be reached on invalid responseMode")
+			return nil
+		}))
+	msg := testMsg(`{"message":"q","responseMode":"bogus"}`)
+	msg.Header = identityHeaders()
+	res := tr.handle(msg)
+	if res == nil {
+		t.Fatal("expected 400 validation error")
+	}
+	if res.Status != 400 {
+		t.Errorf("Status = %d, want 400", res.Status)
 	}
 }
