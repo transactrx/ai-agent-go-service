@@ -288,3 +288,26 @@ func mustMergeWith(t *testing.T, base, overlay string) map[string]any {
 	}
 	return doc
 }
+
+func TestPromptCarveOutDuplicateOverlayEntriesMerge(t *testing.T) {
+	// Regression: overlay with two entries for same ai/agent id — first supplies both prompts,
+	// second supplies an unrelated config key — must MERGE SUCCESSFULLY (no prompt-ownership error)
+	// and the merged agent config must contain both prompts plus the unrelated key.
+	doc := mustMergeWith(t, baseWithAgent, `{
+	  "id": "d", "extends": "abase",
+	  "nodes": [
+	    {"id": "agent1", "config": {"systemMessageFixed": "own fixed", "systemMessageFlexible": "own flex"}},
+	    {"id": "agent1", "config": {"customKey": "customValue"}}
+	  ]
+	}`)
+	cfg := nodesByID(doc)["agent1"]["config"].(map[string]any)
+	if cfg["systemMessageFixed"] != "own fixed" {
+		t.Fatalf("systemMessageFixed lost in merge: %v", cfg)
+	}
+	if cfg["systemMessageFlexible"] != "own flex" {
+		t.Fatalf("systemMessageFlexible lost in merge: %v", cfg)
+	}
+	if cfg["customKey"] != "customValue" {
+		t.Fatalf("customKey from second overlay entry lost: %v", cfg)
+	}
+}

@@ -227,7 +227,15 @@ func enforcePromptOwnership(derivedID string, merged []map[string]any, overlay [
 	for _, on := range overlay {
 		id, _ := on["id"].(string)
 		cfg, _ := on["config"].(map[string]any)
-		overlayPrompts[id] = cfg
+		if cfg == nil {
+			cfg = map[string]any{}
+		}
+		// Accumulate overlay configs per id using deepMerge (handles duplicate overlay entries)
+		if prev, ok := overlayPrompts[id]; ok {
+			overlayPrompts[id] = deepMerge(prev, cfg)
+		} else {
+			overlayPrompts[id] = cfg
+		}
 	}
 	for _, n := range merged {
 		if t, _ := n["type"].(string); t != "ai/agent" {
