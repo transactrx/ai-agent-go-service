@@ -33,6 +33,11 @@ type Config struct {
 	ResponseMode          string         `json:"responseMode"`
 	IdentitySource        IdentitySource `json:"identitySource"`
 	RequestTimeoutSeconds int            `json:"requestTimeoutSeconds,omitempty"`
+	// AllowResponseModeOverride lets a request's body field "responseMode"
+	// override ResponseMode for that one request. Default false: existing
+	// workflows ignore the body field entirely, so their behavior cannot
+	// change until they opt in via config.
+	AllowResponseModeOverride bool `json:"allowResponseModeOverride,omitempty"`
 }
 
 const (
@@ -111,6 +116,7 @@ func (t *natsChatTrigger) Spec() node.NodeSpec {
 
 // chatRequestBody is the per-request payload.
 type chatRequestBody struct {
-	Message   string `json:"message"`
-	SessionID string `json:"sessionId,omitempty"`
+	Message      string `json:"message"`
+	SessionID    string `json:"sessionId,omitempty"`
+	ResponseMode string `json:"responseMode,omitempty"`
 }
