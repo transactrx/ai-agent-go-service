@@ -230,42 +230,51 @@ func (t *natsChatTrigger) handleStreaming(msg *nats_service.NatsMessage, body ch
 	return &nats_service.NatsServiceError{Status: 302}
 }
 
+// handleSingle serves responseMode "single": the whole agent run happens
+// inline (sink.Emit is synchronous) with a collectSink standing in for the
+// stream, and the terminator becomes the one NATS reply. Client-only UI tools
+// cannot round-trip here — without a stream session AwaitClientToolResult
+// fails fast and the model recovers (see engine/nodeenv.go).
 func (t *natsChatTrigger) handleSingle(msg *nats_service.NatsMessage, body chatRequestBody, id identity.Identity, sink node.TriggerSink) *nats_service.NatsServiceError {
-	resp := make(chan struct {
-		body    []byte
-		headers map[string]string
-		err     error
-	}, 1)
-	reply := node.ReplyFunc(func(_ context.Context, b []byte, h map[string]string) error {
-		resp <- struct {
-			body    []byte
-			headers map[string]string
-			err     error
-		}{body: b, headers: h}
-		return nil
-	})
+	cs := newCollectSink(body.SessionID)
 	evt := node.TriggerEvent{
-		RequestID: msg.MessageId,
-		Identity:  id,
-		SessionID: body.SessionID,
-		Body:      msg.Body,
-		Headers:   natsHeaderMap(msg.Header),
-		Reply:     reply,
-		Done:      make(chan struct{}),
+		RequestID:  msg.MessageId,
+		Identity:   id,
+		SessionID:  body.SessionID,
+		Body:       msg.Body,
+		Headers:    natsHeaderMap(msg.Header),
+		StreamSink: cs,
+		Done:       make(chan struct{}),
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), t.requestTimeout)
 	defer cancel()
-	if err := sink.Emit(ctx, evt); err != nil {
-		return serverErr(errcode.ExecutorFailed, err.Error(), 500)
+
+	toReply := func(r singleResult) *nats_service.NatsServiceError {
+		if r.errCode != "" {
+			if r.errCode == errcode.Cancelled && ctx.Err() != nil {
+				return serverErr(errcode.Timeout, "request timeout", 504)
+			}
+			return serverErr(r.errCode, r.errMessage, 500)
+		}
+		msg.ResponseBody = r.body
+		return nil
+	}
+
+	emitErr := sink.Emit(ctx, evt)
+
+	// The agent's terminator (delivered via cs.Close inside Emit) is the most
+	// precise outcome — prefer it over Emit's wrapped error when both exist.
+	select {
+	case r := <-cs.done:
+		return toReply(r)
+	default:
+	}
+	if emitErr != nil {
+		return serverErr(errcode.ExecutorFailed, emitErr.Error(), 500)
 	}
 	select {
-	case r := <-resp:
-		// NatsMessage uses ResponseBody / ResponseHeader (not RespBody / RespHeader)
-		msg.ResponseBody = r.body
-		for k, v := range r.headers {
-			msg.ResponseHeader.Set(k, v)
-		}
-		return nil
+	case r := <-cs.done:
+		return toReply(r)
 	case <-ctx.Done():
 		return serverErr(errcode.Timeout, "request timeout", 504)
 	}
