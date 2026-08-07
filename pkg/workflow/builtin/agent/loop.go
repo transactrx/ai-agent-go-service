@@ -293,7 +293,14 @@ func (a *agentNode) Process(ctx context.Context, in node.AgentInput, sink node.S
 			}
 		}
 		if llmErr != nil {
-			return a.failStream(sink, errcode.LLMError, llmErr)
+			code := errcode.LLMError
+			switch {
+			case errors.Is(llmErr, context.DeadlineExceeded):
+				code = errcode.Timeout
+			case errors.Is(llmErr, context.Canceled):
+				code = errcode.Cancelled
+			}
+			return a.failStream(sink, code, llmErr)
 		}
 
 		msgs = append(msgs, node.Message{Role: node.AssistantMsg, Content: assistantBlocks})
