@@ -99,13 +99,47 @@ func (e *Engine) LoadAll(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("source.List: %w", err)
 	}
-	var loaded, failed []string
+	// Pass 1: read every document so derived files can find their base.
+	raws := make(map[string][]byte, len(ids))
+	var loadable []string
+	var failed []string
 	for _, id := range ids {
 		raw, err := e.cfg.Source.Load(ctx, id)
 		if err != nil {
 			e.cfg.Logger.Printf("workflow %s: load failed: %v", id, err)
 			failed = append(failed, id)
 			continue
+		}
+		raws[id] = raw
+		loadable = append(loadable, id)
+	}
+	// Pass 2: resolve extends (if any) and register. Non-derived files use
+	// their original bytes — identical code path to before derivation existed.
+	var loaded []string
+	for _, id := range loadable {
+		raw := raws[id]
+		if baseID, isDerived := loader.ExtendsTarget(raw); isDerived {
+			baseRaw, ok := raws[baseID]
+			if !ok {
+				e.cfg.Logger.Printf("workflow %s: register failed: extends %q: base workflow not found", id, baseID)
+				failed = append(failed, id)
+				continue
+			}
+			if _, baseDerived := loader.ExtendsTarget(baseRaw); baseDerived {
+				e.cfg.Logger.Printf("workflow %s: register failed: extends %q: base is itself derived (chained extends is not supported)", id, baseID)
+				failed = append(failed, id)
+				continue
+			}
+			merged, err := loader.MergeDerived(baseRaw, raw)
+			if err != nil {
+				e.cfg.Logger.Printf("workflow %s: register failed: %v", id, err)
+				failed = append(failed, id)
+				continue
+			}
+			if v, _ := e.cfg.LookupEnv("WORKFLOW_DERIVE_DEBUG"); v == "true" {
+				e.cfg.Logger.Printf("workflow %s: derived from %s, merged config: %s", id, baseID, merged)
+			}
+			raw = merged
 		}
 		if err := e.registerOne(ctx, raw); err != nil {
 			e.cfg.Logger.Printf("workflow %s: register failed: %v", id, err)

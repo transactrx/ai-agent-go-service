@@ -138,6 +138,31 @@ override flag. With no `responseMode` in the body — or on any workflow that do
 set `allowResponseModeOverride` — behavior is bit-identical to v1.3.x. Existing
 streaming callers need no changes.
 
+## Derived workflows (`extends`)
+
+A workflow file may declare `"extends": "<baseId>"` to overlay onto an existing
+workflow instead of duplicating it whole (used by the machine-caller `Single*`
+workflows, which overlay the UI `powerlineSearch`/`eprescribeSearch` files).
+
+- Two-pass load: base files register first; derived files merge over their base
+  in memory, then the merged result runs the normal load pipeline — a bad merge
+  fails at startup, never at request time.
+- Merge rules: objects deep-merge (derived wins); `null` deletes a key;
+  `nodes[]`/`connections[]` merge by node id; `"$remove": true` deletes a node
+  and all connections touching it.
+- **Prompt carve-out (load-bearing):** `ai/agent` prompt fields
+  (`systemMessageFixed`, `systemMessageFlexible`) are NEVER inherited — each
+  derived file must define its own, or load fails loudly:
+  `derived workflow %q: node %q (ai/agent): systemMessageFixed and
+  systemMessageFlexible must be defined in the derived file — prompts are never
+  inherited`
+- No chained extends — a derived file's base must be a non-derived workflow:
+  `extends %q: base is itself derived (chained extends is not supported)`. A
+  missing base fails with `extends %q: base workflow not found`.
+- Debug: `WORKFLOW_DERIVE_DEBUG=true` logs the merged config (pre-envsubst) per
+  derived workflow at load time: `workflow <id>: derived from <base>, merged
+  config: <json>`.
+
 ## Internals, briefly
 
 The trigger hands each validated request to the engine through `node.TriggerSink`
