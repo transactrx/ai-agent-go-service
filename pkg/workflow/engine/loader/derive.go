@@ -36,7 +36,7 @@ func ExtendsTarget(raw []byte) (string, bool, error) {
 func deepMerge(base, overlay map[string]any) map[string]any {
 	out := make(map[string]any, len(base)+len(overlay))
 	for k, v := range base {
-		out[k] = v
+		out[k] = copyValue(v)
 	}
 	for k, ov := range overlay {
 		if ov == nil {
@@ -52,6 +52,22 @@ func deepMerge(base, overlay map[string]any) map[string]any {
 		out[k] = ov
 	}
 	return out
+}
+
+// copyValue returns a value safe to place in deepMerge's output without
+// aliasing the input: nested maps are copied recursively so mutating the
+// merged result never mutates base/overlay inputs. Arrays and scalars are
+// returned as-is — they always replace wholesale on overlay and base arrays
+// are never mutated in place.
+func copyValue(v any) any {
+	if m, ok := v.(map[string]any); ok {
+		out := make(map[string]any, len(m))
+		for k, mv := range m {
+			out[k] = copyValue(mv)
+		}
+		return out
+	}
+	return v
 }
 
 // MergeDerived merges a derived workflow document (one carrying "extends")
@@ -148,6 +164,7 @@ func mergeNodes(derivedID string, base, overlay []map[string]any) ([]map[string]
 			removed[id] = true
 			continue
 		}
+		delete(on, "$remove") // node is not removed: strip the marker so it never leaks into merged output
 		if !exists {
 			appended = append(appended, on)
 			continue
