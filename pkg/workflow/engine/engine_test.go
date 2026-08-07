@@ -209,6 +209,66 @@ func TestLoadAllDerivedFailuresAreIsolated(t *testing.T) {
 	}
 }
 
+func TestExtendsResolvesByWorkflowID(t *testing.T) {
+	dir := t.TempDir()
+	// Base doc's Source id ("zz-parent-file") deliberately differs from its
+	// JSON "id" ("parentWf") — extends must resolve against the JSON id.
+	writeFile(t, dir, "zz-parent-file.json", `{
+	  "id": "parentWf", "version": 1, "trigger": "t1",
+	  "nodes": [
+	    {"id": "t1", "type": "test/trigger", "config": {"mode": "streaming"}},
+	    {"id": "a1", "type": "test/agent", "config": {"greeting": "bf"}}
+	  ],
+	  "connections": [{"from": {"node": "t1", "port": "main"}, "to": {"node": "a1", "port": "main"}}]
+	}`)
+	writeFile(t, dir, "overlay.json", `{
+	  "id": "derivedWf", "extends": "parentWf",
+	  "nodes": [
+	    {"id": "t1", "config": {"mode": "single"}},
+	    {"id": "a1", "config": {"greeting": "df"}}
+	  ]
+	}`)
+	eng := newTestEngine(t, dir)
+	if err := eng.LoadAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := eng.Workflow("parentWf"); !ok {
+		t.Fatal("parentWf workflow missing")
+	}
+	if _, ok := eng.Workflow("derivedWf"); !ok {
+		t.Fatal("derivedWf workflow missing (extends must resolve by workflow id, not source id)")
+	}
+}
+
+func TestDuplicateWorkflowIDFails(t *testing.T) {
+	dir := t.TempDir()
+	dupDoc := `{
+	  "id": "dupWf", "version": 1, "trigger": "t1",
+	  "nodes": [
+	    {"id": "t1", "type": "test/trigger", "config": {}},
+	    {"id": "a1", "type": "test/agent", "config": {}}
+	  ],
+	  "connections": [{"from": {"node": "t1", "port": "main"}, "to": {"node": "a1", "port": "main"}}]
+	}`
+	writeFile(t, dir, "docA.json", dupDoc)
+	writeFile(t, dir, "docB.json", dupDoc)
+
+	var logBuf bytes.Buffer
+	eng := newTestEngineWithLogger(t, dir, log.New(&logBuf, "", 0))
+	if err := eng.LoadAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := eng.Workflow("dupWf"); !ok {
+		t.Fatal("dupWf must register exactly once")
+	}
+
+	logOutput := logBuf.String()
+	const want = `workflow dupWf: register failed: duplicate workflow id`
+	if !strings.Contains(logOutput, want) {
+		t.Fatalf("log output missing %q; got:\n%s", want, logOutput)
+	}
+}
+
 type recordingSink struct {
 	mu     sync.Mutex
 	events []node.StreamEvent
