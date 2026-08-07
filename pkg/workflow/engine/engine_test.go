@@ -263,7 +263,7 @@ func TestDuplicateWorkflowIDFails(t *testing.T) {
 	}
 
 	logOutput := logBuf.String()
-	const want = `workflow dupWf: register failed: duplicate workflow id`
+	const want = `workflow docB: register failed: duplicate workflow id "dupWf"`
 	if !strings.Contains(logOutput, want) {
 		t.Fatalf("log output missing %q; got:\n%s", want, logOutput)
 	}

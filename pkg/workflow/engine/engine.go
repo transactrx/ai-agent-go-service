@@ -128,6 +128,8 @@ func (e *Engine) LoadAll(ctx context.Context) error {
 		var docPeek struct {
 			ID string `json:"id"`
 		}
+		// Best-effort peek; malformed JSON just yields "" here — the real
+		// parse error surfaces downstream in registerOne.
 		_ = json.Unmarshal(raw, &docPeek)
 		if docPeek.ID != "" {
 			if _, seen := byWorkflowID[docPeek.ID]; seen {
@@ -143,7 +145,7 @@ func (e *Engine) LoadAll(ctx context.Context) error {
 	for _, id := range loadable {
 		raw := raws[id]
 		if wfID, isDup := dupes[id]; isDup {
-			e.cfg.Logger.Printf("workflow %s: register failed: duplicate workflow id %q (first definition wins)", wfID, wfID)
+			e.cfg.Logger.Printf("workflow %s: register failed: duplicate workflow id %q (first definition wins)", id, wfID)
 			failed = append(failed, id)
 			continue
 		}
