@@ -478,6 +478,11 @@ func (a *agentNode) Process(ctx context.Context, in node.AgentInput, sink node.S
 
 			isErr := err != nil
 			payload := out
+			// Bedrock rejects user messages with empty content; a tool that legitimately
+			// returns nothing must still produce a non-empty tool_result block.
+			if !isErr && isBlankToolPayload(payload) {
+				payload = mustJSON("(tool returned no output)")
+			}
 			if isErr {
 				toolErrorCounts[tc.Name]++
 				var pde *node.PolicyDeniedError
@@ -856,4 +861,11 @@ func (a *agentNode) tracef(format string, args ...any) {
 func mustJSON(v any) json.RawMessage {
 	b, _ := json.Marshal(v)
 	return b
+}
+
+// isBlankToolPayload reports whether a successful tool payload would render
+// as empty content: no bytes, whitespace, an empty JSON string, or JSON null.
+func isBlankToolPayload(p json.RawMessage) bool {
+	s := strings.TrimSpace(string(p))
+	return s == "" || s == `""` || s == "null"
 }
