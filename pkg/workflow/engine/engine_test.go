@@ -209,6 +209,28 @@ func TestLoadAllDerivedFailuresAreIsolated(t *testing.T) {
 	}
 }
 
+func TestLoadAllWrongTypeExtendsFailsLoudly(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "base.json", testBaseWorkflow)
+	writeFile(t, dir, "bad.json", `{"id": "bad", "extends": 42}`)
+
+	var logBuf bytes.Buffer
+	eng := newTestEngineWithLogger(t, dir, log.New(&logBuf, "", 0))
+	_ = eng.LoadAll(context.Background())
+	if _, ok := eng.Workflow("base"); !ok {
+		t.Fatal("healthy sibling must load despite invalid extends")
+	}
+	if _, ok := eng.Workflow("bad"); ok {
+		t.Fatal("workflow with non-string extends must not register")
+	}
+
+	logOutput := logBuf.String()
+	const want = `workflow bad: register failed: invalid extends`
+	if !strings.Contains(logOutput, want) {
+		t.Fatalf("log output missing %q; got:\n%s", want, logOutput)
+	}
+}
+
 func TestExtendsResolvesByWorkflowID(t *testing.T) {
 	dir := t.TempDir()
 	// Base doc's Source id ("zz-parent-file") deliberately differs from its

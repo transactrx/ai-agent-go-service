@@ -149,14 +149,26 @@ func (e *Engine) LoadAll(ctx context.Context) error {
 			failed = append(failed, id)
 			continue
 		}
-		if baseID, isDerived := loader.ExtendsTarget(raw); isDerived {
+		baseID, isDerived, extErr := loader.ExtendsTarget(raw)
+		if extErr != nil {
+			e.cfg.Logger.Printf("workflow %s: register failed: %v", id, extErr)
+			failed = append(failed, id)
+			continue
+		}
+		if isDerived {
 			baseRaw, ok := byWorkflowID[baseID]
 			if !ok {
 				e.cfg.Logger.Printf("workflow %s: register failed: extends %q: base workflow not found", id, baseID)
 				failed = append(failed, id)
 				continue
 			}
-			if _, baseDerived := loader.ExtendsTarget(baseRaw); baseDerived {
+			_, baseDerived, baseExtErr := loader.ExtendsTarget(baseRaw)
+			if baseExtErr != nil {
+				e.cfg.Logger.Printf("workflow %s: register failed: %v", id, baseExtErr)
+				failed = append(failed, id)
+				continue
+			}
+			if baseDerived {
 				e.cfg.Logger.Printf("workflow %s: register failed: extends %q: base is itself derived (chained extends is not supported)", id, baseID)
 				failed = append(failed, id)
 				continue

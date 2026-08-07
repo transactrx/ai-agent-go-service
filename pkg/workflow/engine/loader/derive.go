@@ -9,19 +9,25 @@ import (
 )
 
 // ExtendsTarget reports the "extends" marker of a raw workflow document.
-// Malformed JSON returns ("", false) — the load pipeline surfaces the real
-// parse error for non-derived files, and MergeDerived re-parses anyway.
-func ExtendsTarget(raw []byte) (string, bool) {
-	var peek struct {
-		Extends string `json:"extends"`
-	}
+// Malformed JSON returns ("", false, nil) — the load pipeline surfaces the
+// real parse error for non-derived files, and MergeDerived re-parses anyway.
+// err is non-nil when the "extends" key is present but is not a non-empty
+// string — that is a loud per-workflow error, not silently treated as
+// "not derived".
+func ExtendsTarget(raw []byte) (string, bool, error) {
+	var peek map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &peek); err != nil {
-		return "", false
+		return "", false, nil // parse errors surface later in the normal pipeline
 	}
-	if peek.Extends == "" {
-		return "", false
+	ev, ok := peek["extends"]
+	if !ok {
+		return "", false, nil
 	}
-	return peek.Extends, true
+	var s string
+	if err := json.Unmarshal(ev, &s); err != nil || s == "" {
+		return "", false, fmt.Errorf("invalid extends: must be a non-empty string, got %s", string(ev))
+	}
+	return s, true, nil
 }
 
 // deepMerge returns base merged with overlay: maps merge recursively with

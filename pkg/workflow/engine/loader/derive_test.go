@@ -9,22 +9,26 @@ import (
 
 func TestExtendsTarget(t *testing.T) {
 	cases := []struct {
-		name string
-		raw  string
-		want string
-		ok   bool
+		name    string
+		raw     string
+		want    string
+		ok      bool
+		wantErr bool
 	}{
-		{"present", `{"id":"d","extends":"base"}`, "base", true},
-		{"absent", `{"id":"plain"}`, "", false},
-		{"empty string", `{"id":"d","extends":""}`, "", false},
-		{"malformed json", `{"id":`, "", false},
-		{"wrong type", `{"id":"d","extends":42}`, "", false},
+		{"present", `{"id":"d","extends":"base"}`, "base", true, false},
+		{"absent", `{"id":"plain"}`, "", false, false},
+		{"empty string", `{"id":"d","extends":""}`, "", false, true},
+		{"malformed json", `{"id":`, "", false, false},
+		{"wrong type", `{"id":"d","extends":42}`, "", false, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, ok := ExtendsTarget([]byte(c.raw))
+			got, ok, err := ExtendsTarget([]byte(c.raw))
 			if got != c.want || ok != c.ok {
-				t.Fatalf("ExtendsTarget(%s) = (%q,%v), want (%q,%v)", c.raw, got, ok, c.want, c.ok)
+				t.Fatalf("ExtendsTarget(%s) = (%q,%v,%v), want (%q,%v)", c.raw, got, ok, err, c.want, c.ok)
+			}
+			if (err != nil) != c.wantErr {
+				t.Fatalf("ExtendsTarget(%s) err = %v, wantErr %v", c.raw, err, c.wantErr)
 			}
 		})
 	}
