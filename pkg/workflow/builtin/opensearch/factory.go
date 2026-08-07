@@ -156,7 +156,7 @@ func (t *opensearchTool) ToolSpec() node.ToolSpec {
 		    },
 		    "queryBody": {
 		      "type": "object",
-		      "description": "OpenSearch bool clause WITHOUT a top-level wrapping. Use must/must_not/filter as needed. The server wraps your clause in a top-level bool, injects security/date constraints into must, and adds size/sort/aggs. Do NOT include size, _source, sort, aggregations, or top-level should-only constructs.",
+		      "description": "OpenSearch bool clause WITHOUT a top-level wrapping. Use must/must_not/filter as needed. The server wraps your clause in a top-level bool, injects security constraints into must, and adds size/sort/aggs. Do NOT include size, _source, sort, aggregations, or top-level should-only constructs.",
 		      "properties": {
 		        "must":     {"type": "array"},
 		        "must_not": {"type": "array"},

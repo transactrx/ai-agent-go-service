@@ -36,7 +36,7 @@ semantics; no agent-loop restructuring.
 (`buildScopeClauses` — origin/ncpdp/npi terms; no date clause exists). The model repeats
 the false date claim to users.
 **Fix:** change the wording to "injects security constraints into must" in
-`pkg/workflow/builtin/opensearch/factory.go`.
+`pkg/workflow/builtin/opensearch/factory.go`. ✓ DONE
 **Consumer follow-up (chatApi, separate branch after release):** same edit in the workflow
 JSONs — `systemMessageFixed` ("Security scope and the date range are enforced
 server-side…" → security scope only) and `toolDescription` in the base workflows; the
