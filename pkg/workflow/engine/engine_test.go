@@ -231,6 +231,44 @@ func TestLoadAllWrongTypeExtendsFailsLoudly(t *testing.T) {
 	}
 }
 
+func TestLoadAllBaseWithInvalidExtendsNamesBaseInLog(t *testing.T) {
+	dir := t.TempDir()
+	// badBase's own "extends" is malformed (not a string). It fails on its
+	// own check, AND an overlay extending it must fail via the "base's own
+	// extends is invalid" path (engine.go's baseExtErr branch) — that log
+	// line must name the base.
+	writeFile(t, dir, "badBase.json", `{
+	  "id": "badBase", "extends": 42, "version": 1, "trigger": "t1",
+	  "nodes": [
+	    {"id": "t1", "type": "test/trigger", "config": {"mode": "streaming"}},
+	    {"id": "a1", "type": "test/agent", "config": {"greeting": "bf"}}
+	  ],
+	  "connections": [{"from": {"node": "t1", "port": "main"}, "to": {"node": "a1", "port": "main"}}]
+	}`)
+	writeFile(t, dir, "child.json", `{"id": "child", "extends": "badBase"}`)
+	writeFile(t, dir, "base.json", testBaseWorkflow)
+
+	var logBuf bytes.Buffer
+	eng := newTestEngineWithLogger(t, dir, log.New(&logBuf, "", 0))
+	_ = eng.LoadAll(context.Background())
+
+	if _, ok := eng.Workflow("badBase"); ok {
+		t.Fatal("badBase must not register: its own extends is invalid")
+	}
+	if _, ok := eng.Workflow("child"); ok {
+		t.Fatal("child must not register: its base failed its own extends check")
+	}
+	if _, ok := eng.Workflow("base"); !ok {
+		t.Fatal("healthy sibling must load despite the badBase/child failures")
+	}
+
+	logOutput := logBuf.String()
+	const want = `workflow child: register failed: base "badBase": invalid extends`
+	if !strings.Contains(logOutput, want) {
+		t.Fatalf("log output missing %q; got:\n%s", want, logOutput)
+	}
+}
+
 func TestExtendsResolvesByWorkflowID(t *testing.T) {
 	dir := t.TempDir()
 	// Base doc's Source id ("zz-parent-file") deliberately differs from its

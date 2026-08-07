@@ -97,6 +97,28 @@ func TestDeepMergeNoAliasing(t *testing.T) {
 	if overlay2["obj"].(map[string]any)["x"] != "ox" {
 		t.Fatal("mutating result aliased overlay-introduced map")
 	}
+
+	// a map nested INSIDE an array must not alias either: mutating that map
+	// in the result must not mutate the input array's map.
+	base3 := map[string]any{
+		"arr": []any{map[string]any{"n": "orig"}},
+	}
+	overlay3 := map[string]any{}
+	got3 := deepMerge(base3, overlay3)
+	got3["arr"].([]any)[0].(map[string]any)["n"] = "mutated"
+	if base3["arr"].([]any)[0].(map[string]any)["n"] != "orig" {
+		t.Fatal("mutating result aliased a map nested inside base array")
+	}
+
+	base4 := map[string]any{}
+	overlay4 := map[string]any{
+		"arr": []any{map[string]any{"n": "orig"}},
+	}
+	got4 := deepMerge(base4, overlay4)
+	got4["arr"].([]any)[0].(map[string]any)["n"] = "mutated"
+	if overlay4["arr"].([]any)[0].(map[string]any)["n"] != "orig" {
+		t.Fatal("mutating result aliased a map nested inside overlay array")
+	}
 }
 
 func TestRemoveKeyNeverInOutput(t *testing.T) {

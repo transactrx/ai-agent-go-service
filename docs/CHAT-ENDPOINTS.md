@@ -144,9 +144,11 @@ A workflow file may declare `"extends": "<baseId>"` to overlay onto an existing
 workflow instead of duplicating it whole (used by the machine-caller `Single*`
 workflows, which overlay the UI `powerlineSearch`/`eprescribeSearch` files).
 
-- Two-pass load: base files register first; derived files merge over their base
-  in memory, then the merged result runs the normal load pipeline — a bad merge
-  fails at startup, never at request time.
+- Two-pass load: pass 1 reads every workflow file and indexes it by its JSON
+  `"id"` field — not its file/source id, so `extends` resolves against the
+  workflow's declared id regardless of what file it lives in. Pass 2 resolves
+  `extends` (if any) and registers; a bad merge fails at startup, never at
+  request time.
 - Merge rules: objects deep-merge (derived wins); `null` deletes a key;
   `nodes[]`/`connections[]` merge by node id; `"$remove": true` deletes a node
   and all connections touching it.
@@ -159,6 +161,17 @@ workflows, which overlay the UI `powerlineSearch`/`eprescribeSearch` files).
 - No chained extends — a derived file's base must be a non-derived workflow:
   `extends %q: base is itself derived (chained extends is not supported)`. A
   missing base fails with `extends %q: base workflow not found`.
+- **Duplicate workflow ids fail loudly, isolated:** if two files declare the
+  same JSON `"id"`, the first (by sorted source id) wins and registers
+  normally; every later definition fails to register — `workflow %s: register
+  failed: duplicate workflow id %q (first definition wins)` — without
+  affecting any other workflow's load.
+- **Invalid `extends` fails loudly, isolated:** a non-string or empty
+  `extends` value fails only that workflow — `workflow %s: register failed:
+  invalid extends: ...`. If the failure is discovered while resolving an
+  overlay's base (the base's own `extends` is invalid), the log names the
+  base too: `workflow %s: register failed: base %q: invalid extends: ...`.
+  Either way, siblings still load.
 - Debug: `WORKFLOW_DERIVE_DEBUG=true` logs the merged config (pre-envsubst) per
   derived workflow at load time: `workflow <id>: derived from <base>, merged
   config: <json>`.

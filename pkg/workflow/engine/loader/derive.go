@@ -55,15 +55,22 @@ func deepMerge(base, overlay map[string]any) map[string]any {
 }
 
 // copyValue returns a value safe to place in deepMerge's output without
-// aliasing the input: nested maps are copied recursively so mutating the
-// merged result never mutates base/overlay inputs. Arrays and scalars are
-// returned as-is — they always replace wholesale on overlay and base arrays
-// are never mutated in place.
+// aliasing the input: nested maps are copied recursively, and arrays are
+// copied element-by-element (recursively copying any maps nested inside)
+// so mutating the merged result never mutates base/overlay inputs. Scalars
+// are returned as-is.
 func copyValue(v any) any {
 	if m, ok := v.(map[string]any); ok {
 		out := make(map[string]any, len(m))
 		for k, mv := range m {
 			out[k] = copyValue(mv)
+		}
+		return out
+	}
+	if a, ok := v.([]any); ok {
+		out := make([]any, len(a))
+		for i, ev := range a {
+			out[i] = copyValue(ev)
 		}
 		return out
 	}

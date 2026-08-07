@@ -164,7 +164,7 @@ func (e *Engine) LoadAll(ctx context.Context) error {
 			}
 			_, baseDerived, baseExtErr := loader.ExtendsTarget(baseRaw)
 			if baseExtErr != nil {
-				e.cfg.Logger.Printf("workflow %s: register failed: %v", id, baseExtErr)
+				e.cfg.Logger.Printf("workflow %s: register failed: base %q: %v", id, baseID, baseExtErr)
 				failed = append(failed, id)
 				continue
 			}
