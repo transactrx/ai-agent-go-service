@@ -49,7 +49,7 @@ func deepMerge(base, overlay map[string]any) map[string]any {
 			out[k] = deepMerge(bm, om)
 			continue
 		}
-		out[k] = ov
+		out[k] = copyValue(ov)
 	}
 	return out
 }
