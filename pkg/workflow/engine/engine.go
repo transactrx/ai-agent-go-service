@@ -2,9 +2,11 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -99,8 +101,18 @@ func (e *Engine) LoadAll(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("source.List: %w", err)
 	}
-	// Pass 1: read every document so derived files can find their base.
+	// WorkflowSource does not contractually guarantee List order (only
+	// FilesystemSource happens to via lexical directory walk). Sort so
+	// "first definition wins" for duplicate workflow ids is deterministic
+	// across any source implementation.
+	sort.Strings(ids)
+
+	// Pass 1: read every document so derived files can find their base, and
+	// index each by its own JSON "id" (not its Source id) so extends can
+	// resolve against the workflow id regardless of what the file is named.
 	raws := make(map[string][]byte, len(ids))
+	byWorkflowID := make(map[string][]byte, len(ids))
+	dupes := make(map[string]string) // source id -> JSON workflow id that collided
 	var loadable []string
 	var failed []string
 	for _, id := range ids {
@@ -112,20 +124,51 @@ func (e *Engine) LoadAll(ctx context.Context) error {
 		}
 		raws[id] = raw
 		loadable = append(loadable, id)
+
+		var docPeek struct {
+			ID string `json:"id"`
+		}
+		// Best-effort peek; malformed JSON just yields "" here — the real
+		// parse error surfaces downstream in registerOne.
+		_ = json.Unmarshal(raw, &docPeek)
+		if docPeek.ID != "" {
+			if _, seen := byWorkflowID[docPeek.ID]; seen {
+				dupes[id] = docPeek.ID
+			} else {
+				byWorkflowID[docPeek.ID] = raw
+			}
+		}
 	}
 	// Pass 2: resolve extends (if any) and register. Non-derived files use
 	// their original bytes — identical code path to before derivation existed.
 	var loaded []string
 	for _, id := range loadable {
 		raw := raws[id]
-		if baseID, isDerived := loader.ExtendsTarget(raw); isDerived {
-			baseRaw, ok := raws[baseID]
+		if wfID, isDup := dupes[id]; isDup {
+			e.cfg.Logger.Printf("workflow %s: register failed: duplicate workflow id %q (first definition wins)", id, wfID)
+			failed = append(failed, id)
+			continue
+		}
+		baseID, isDerived, extErr := loader.ExtendsTarget(raw)
+		if extErr != nil {
+			e.cfg.Logger.Printf("workflow %s: register failed: %v", id, extErr)
+			failed = append(failed, id)
+			continue
+		}
+		if isDerived {
+			baseRaw, ok := byWorkflowID[baseID]
 			if !ok {
 				e.cfg.Logger.Printf("workflow %s: register failed: extends %q: base workflow not found", id, baseID)
 				failed = append(failed, id)
 				continue
 			}
-			if _, baseDerived := loader.ExtendsTarget(baseRaw); baseDerived {
+			_, baseDerived, baseExtErr := loader.ExtendsTarget(baseRaw)
+			if baseExtErr != nil {
+				e.cfg.Logger.Printf("workflow %s: register failed: base %q: %v", id, baseID, baseExtErr)
+				failed = append(failed, id)
+				continue
+			}
+			if baseDerived {
 				e.cfg.Logger.Printf("workflow %s: register failed: extends %q: base is itself derived (chained extends is not supported)", id, baseID)
 				failed = append(failed, id)
 				continue

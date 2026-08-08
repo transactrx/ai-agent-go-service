@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.5.1
+
+- fix(agent): empty tool results are padded ("(tool returned no output)") — Bedrock
+  rejects empty content blocks (was a 500 to the caller).
+- fix(agent/natschat): a request timeout that fires mid-LLM-call now surfaces as
+  `timeout` (single mode: HTTP-style 504) instead of `llm-error`/500. **Caller-visible
+  status change for this failure mode.** Client cancellation still maps to `cancelled`.
+- fix(engine): `extends` resolves by workflow id (not source/file id); duplicate
+  workflow ids and non-string `extends` values now fail that workflow loudly
+  (isolation preserved).
+- fix(loader): deepMerge no longer aliases input maps; `$remove` markers are stripped
+  from merged configs.
+- docs(opensearch): tool description corrected — the server injects security
+  constraints only (no date clause exists).
+- tests: derivation passthrough golden test; natschat terminator-precedence and
+  cancel-vs-timeout pins.
+
 ## v1.5.0
 
 - `engine/loader`: derived workflows — a workflow JSON may declare `extends: "<source id>"`

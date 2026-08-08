@@ -9,22 +9,26 @@ import (
 
 func TestExtendsTarget(t *testing.T) {
 	cases := []struct {
-		name string
-		raw  string
-		want string
-		ok   bool
+		name    string
+		raw     string
+		want    string
+		ok      bool
+		wantErr bool
 	}{
-		{"present", `{"id":"d","extends":"base"}`, "base", true},
-		{"absent", `{"id":"plain"}`, "", false},
-		{"empty string", `{"id":"d","extends":""}`, "", false},
-		{"malformed json", `{"id":`, "", false},
-		{"wrong type", `{"id":"d","extends":42}`, "", false},
+		{"present", `{"id":"d","extends":"base"}`, "base", true, false},
+		{"absent", `{"id":"plain"}`, "", false, false},
+		{"empty string", `{"id":"d","extends":""}`, "", false, true},
+		{"malformed json", `{"id":`, "", false, false},
+		{"wrong type", `{"id":"d","extends":42}`, "", false, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, ok := ExtendsTarget([]byte(c.raw))
+			got, ok, err := ExtendsTarget([]byte(c.raw))
 			if got != c.want || ok != c.ok {
-				t.Fatalf("ExtendsTarget(%s) = (%q,%v), want (%q,%v)", c.raw, got, ok, c.want, c.ok)
+				t.Fatalf("ExtendsTarget(%s) = (%q,%v,%v), want (%q,%v)", c.raw, got, ok, err, c.want, c.ok)
+			}
+			if (err != nil) != c.wantErr {
+				t.Fatalf("ExtendsTarget(%s) err = %v, wantErr %v", c.raw, err, c.wantErr)
 			}
 		})
 	}
@@ -65,6 +69,98 @@ func TestDeepMergeNullDeletes(t *testing.T) {
 	}
 	if cfg["width"] != 800.0 {
 		t.Fatal("sibling keys must survive")
+	}
+}
+
+func TestDeepMergeNoAliasing(t *testing.T) {
+	base := map[string]any{
+		"obj": map[string]any{"x": "bx", "nested": map[string]any{"n": 1.0}},
+	}
+	overlay := map[string]any{}
+	got := deepMerge(base, overlay)
+	// mutate a nested map in the RESULT
+	got["obj"].(map[string]any)["x"] = "mutated"
+	got["obj"].(map[string]any)["nested"].(map[string]any)["n"] = 999.0
+	// base input map must be unchanged
+	if base["obj"].(map[string]any)["x"] != "bx" {
+		t.Fatal("mutating result aliased base map")
+	}
+	if base["obj"].(map[string]any)["nested"].(map[string]any)["n"] != 1.0 {
+		t.Fatal("mutating result aliased base nested map")
+	}
+
+	// overlay-introduced nested map must not alias either
+	base2 := map[string]any{}
+	overlay2 := map[string]any{"obj": map[string]any{"x": "ox"}}
+	got2 := deepMerge(base2, overlay2)
+	got2["obj"].(map[string]any)["x"] = "mutated"
+	if overlay2["obj"].(map[string]any)["x"] != "ox" {
+		t.Fatal("mutating result aliased overlay-introduced map")
+	}
+
+	// a map nested INSIDE an array must not alias either: mutating that map
+	// in the result must not mutate the input array's map.
+	base3 := map[string]any{
+		"arr": []any{map[string]any{"n": "orig"}},
+	}
+	overlay3 := map[string]any{}
+	got3 := deepMerge(base3, overlay3)
+	got3["arr"].([]any)[0].(map[string]any)["n"] = "mutated"
+	if base3["arr"].([]any)[0].(map[string]any)["n"] != "orig" {
+		t.Fatal("mutating result aliased a map nested inside base array")
+	}
+
+	base4 := map[string]any{}
+	overlay4 := map[string]any{
+		"arr": []any{map[string]any{"n": "orig"}},
+	}
+	got4 := deepMerge(base4, overlay4)
+	got4["arr"].([]any)[0].(map[string]any)["n"] = "mutated"
+	if overlay4["arr"].([]any)[0].(map[string]any)["n"] != "orig" {
+		t.Fatal("mutating result aliased a map nested inside overlay array")
+	}
+}
+
+func TestRemoveKeyNeverInOutput(t *testing.T) {
+	doc := mustMerge(t, `{
+	  "id": "derived", "extends": "base",
+	  "nodes": [{"id": "n1", "$remove": false, "config": {"foo": "bar"}}]
+	}`)
+	ns := nodesByID(doc)
+	n1, ok := ns["n1"]
+	if !ok {
+		t.Fatal("appended node n1 missing from merged output")
+	}
+	if _, has := n1["$remove"]; has {
+		t.Fatal("$remove marker leaked into merged node output")
+	}
+	raw, err := json.Marshal(n1)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(raw), "$remove") {
+		t.Fatalf("$remove leaked into merged node JSON: %s", raw)
+	}
+
+	// existing-node merge path: overlay id exists in base
+	doc2 := mustMerge(t, `{
+	  "id": "derived", "extends": "base",
+	  "nodes": [{"id": "tool1", "$remove": false, "config": {"allowedIndexPattern": "y-*"}}]
+	}`)
+	ns2 := nodesByID(doc2)
+	tool1, ok := ns2["tool1"]
+	if !ok {
+		t.Fatal("merged node tool1 missing from merged output")
+	}
+	if _, has := tool1["$remove"]; has {
+		t.Fatal("$remove marker leaked into merged (existing-node) output")
+	}
+	raw2, err := json.Marshal(tool1)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(raw2), "$remove") {
+		t.Fatalf("$remove leaked into merged (existing-node) JSON: %s", raw2)
 	}
 }
 
