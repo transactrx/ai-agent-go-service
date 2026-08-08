@@ -9,19 +9,25 @@ import (
 )
 
 // ExtendsTarget reports the "extends" marker of a raw workflow document.
-// Malformed JSON returns ("", false) — the load pipeline surfaces the real
-// parse error for non-derived files, and MergeDerived re-parses anyway.
-func ExtendsTarget(raw []byte) (string, bool) {
-	var peek struct {
-		Extends string `json:"extends"`
-	}
+// Malformed JSON returns ("", false, nil) — the load pipeline surfaces the
+// real parse error for non-derived files, and MergeDerived re-parses anyway.
+// err is non-nil when the "extends" key is present but is not a non-empty
+// string — that is a loud per-workflow error, not silently treated as
+// "not derived".
+func ExtendsTarget(raw []byte) (string, bool, error) {
+	var peek map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &peek); err != nil {
-		return "", false
+		return "", false, nil // parse errors surface later in the normal pipeline
 	}
-	if peek.Extends == "" {
-		return "", false
+	ev, ok := peek["extends"]
+	if !ok {
+		return "", false, nil
 	}
-	return peek.Extends, true
+	var s string
+	if err := json.Unmarshal(ev, &s); err != nil || s == "" {
+		return "", false, fmt.Errorf("invalid extends: must be a non-empty string, got %s", string(ev))
+	}
+	return s, true, nil
 }
 
 // deepMerge returns base merged with overlay: maps merge recursively with
@@ -30,7 +36,7 @@ func ExtendsTarget(raw []byte) (string, bool) {
 func deepMerge(base, overlay map[string]any) map[string]any {
 	out := make(map[string]any, len(base)+len(overlay))
 	for k, v := range base {
-		out[k] = v
+		out[k] = copyValue(v)
 	}
 	for k, ov := range overlay {
 		if ov == nil {
@@ -43,9 +49,32 @@ func deepMerge(base, overlay map[string]any) map[string]any {
 			out[k] = deepMerge(bm, om)
 			continue
 		}
-		out[k] = ov
+		out[k] = copyValue(ov)
 	}
 	return out
+}
+
+// copyValue returns a value safe to place in deepMerge's output without
+// aliasing the input: nested maps are copied recursively, and arrays are
+// copied element-by-element (recursively copying any maps nested inside)
+// so mutating the merged result never mutates base/overlay inputs. Scalars
+// are returned as-is.
+func copyValue(v any) any {
+	if m, ok := v.(map[string]any); ok {
+		out := make(map[string]any, len(m))
+		for k, mv := range m {
+			out[k] = copyValue(mv)
+		}
+		return out
+	}
+	if a, ok := v.([]any); ok {
+		out := make([]any, len(a))
+		for i, ev := range a {
+			out[i] = copyValue(ev)
+		}
+		return out
+	}
+	return v
 }
 
 // MergeDerived merges a derived workflow document (one carrying "extends")
@@ -142,6 +171,7 @@ func mergeNodes(derivedID string, base, overlay []map[string]any) ([]map[string]
 			removed[id] = true
 			continue
 		}
+		delete(on, "$remove") // node is not removed: strip the marker so it never leaks into merged output
 		if !exists {
 			appended = append(appended, on)
 			continue

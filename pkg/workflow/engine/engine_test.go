@@ -209,6 +209,126 @@ func TestLoadAllDerivedFailuresAreIsolated(t *testing.T) {
 	}
 }
 
+func TestLoadAllWrongTypeExtendsFailsLoudly(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "base.json", testBaseWorkflow)
+	writeFile(t, dir, "bad.json", `{"id": "bad", "extends": 42}`)
+
+	var logBuf bytes.Buffer
+	eng := newTestEngineWithLogger(t, dir, log.New(&logBuf, "", 0))
+	_ = eng.LoadAll(context.Background())
+	if _, ok := eng.Workflow("base"); !ok {
+		t.Fatal("healthy sibling must load despite invalid extends")
+	}
+	if _, ok := eng.Workflow("bad"); ok {
+		t.Fatal("workflow with non-string extends must not register")
+	}
+
+	logOutput := logBuf.String()
+	const want = `workflow bad: register failed: invalid extends`
+	if !strings.Contains(logOutput, want) {
+		t.Fatalf("log output missing %q; got:\n%s", want, logOutput)
+	}
+}
+
+func TestLoadAllBaseWithInvalidExtendsNamesBaseInLog(t *testing.T) {
+	dir := t.TempDir()
+	// badBase's own "extends" is malformed (not a string). It fails on its
+	// own check, AND an overlay extending it must fail via the "base's own
+	// extends is invalid" path (engine.go's baseExtErr branch) — that log
+	// line must name the base.
+	writeFile(t, dir, "badBase.json", `{
+	  "id": "badBase", "extends": 42, "version": 1, "trigger": "t1",
+	  "nodes": [
+	    {"id": "t1", "type": "test/trigger", "config": {"mode": "streaming"}},
+	    {"id": "a1", "type": "test/agent", "config": {"greeting": "bf"}}
+	  ],
+	  "connections": [{"from": {"node": "t1", "port": "main"}, "to": {"node": "a1", "port": "main"}}]
+	}`)
+	writeFile(t, dir, "child.json", `{"id": "child", "extends": "badBase"}`)
+	writeFile(t, dir, "base.json", testBaseWorkflow)
+
+	var logBuf bytes.Buffer
+	eng := newTestEngineWithLogger(t, dir, log.New(&logBuf, "", 0))
+	_ = eng.LoadAll(context.Background())
+
+	if _, ok := eng.Workflow("badBase"); ok {
+		t.Fatal("badBase must not register: its own extends is invalid")
+	}
+	if _, ok := eng.Workflow("child"); ok {
+		t.Fatal("child must not register: its base failed its own extends check")
+	}
+	if _, ok := eng.Workflow("base"); !ok {
+		t.Fatal("healthy sibling must load despite the badBase/child failures")
+	}
+
+	logOutput := logBuf.String()
+	const want = `workflow child: register failed: base "badBase": invalid extends`
+	if !strings.Contains(logOutput, want) {
+		t.Fatalf("log output missing %q; got:\n%s", want, logOutput)
+	}
+}
+
+func TestExtendsResolvesByWorkflowID(t *testing.T) {
+	dir := t.TempDir()
+	// Base doc's Source id ("zz-parent-file") deliberately differs from its
+	// JSON "id" ("parentWf") — extends must resolve against the JSON id.
+	writeFile(t, dir, "zz-parent-file.json", `{
+	  "id": "parentWf", "version": 1, "trigger": "t1",
+	  "nodes": [
+	    {"id": "t1", "type": "test/trigger", "config": {"mode": "streaming"}},
+	    {"id": "a1", "type": "test/agent", "config": {"greeting": "bf"}}
+	  ],
+	  "connections": [{"from": {"node": "t1", "port": "main"}, "to": {"node": "a1", "port": "main"}}]
+	}`)
+	writeFile(t, dir, "overlay.json", `{
+	  "id": "derivedWf", "extends": "parentWf",
+	  "nodes": [
+	    {"id": "t1", "config": {"mode": "single"}},
+	    {"id": "a1", "config": {"greeting": "df"}}
+	  ]
+	}`)
+	eng := newTestEngine(t, dir)
+	if err := eng.LoadAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := eng.Workflow("parentWf"); !ok {
+		t.Fatal("parentWf workflow missing")
+	}
+	if _, ok := eng.Workflow("derivedWf"); !ok {
+		t.Fatal("derivedWf workflow missing (extends must resolve by workflow id, not source id)")
+	}
+}
+
+func TestDuplicateWorkflowIDFails(t *testing.T) {
+	dir := t.TempDir()
+	dupDoc := `{
+	  "id": "dupWf", "version": 1, "trigger": "t1",
+	  "nodes": [
+	    {"id": "t1", "type": "test/trigger", "config": {}},
+	    {"id": "a1", "type": "test/agent", "config": {}}
+	  ],
+	  "connections": [{"from": {"node": "t1", "port": "main"}, "to": {"node": "a1", "port": "main"}}]
+	}`
+	writeFile(t, dir, "docA.json", dupDoc)
+	writeFile(t, dir, "docB.json", dupDoc)
+
+	var logBuf bytes.Buffer
+	eng := newTestEngineWithLogger(t, dir, log.New(&logBuf, "", 0))
+	if err := eng.LoadAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := eng.Workflow("dupWf"); !ok {
+		t.Fatal("dupWf must register exactly once")
+	}
+
+	logOutput := logBuf.String()
+	const want = `workflow docB: register failed: duplicate workflow id "dupWf"`
+	if !strings.Contains(logOutput, want) {
+		t.Fatalf("log output missing %q; got:\n%s", want, logOutput)
+	}
+}
+
 type recordingSink struct {
 	mu     sync.Mutex
 	events []node.StreamEvent

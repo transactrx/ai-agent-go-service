@@ -280,7 +280,8 @@ func (t *natsChatTrigger) handleSingle(msg *nats_service.NatsMessage, body chatR
 
 	toReply := func(r singleResult) *nats_service.NatsServiceError {
 		if r.errCode != "" {
-			if r.errCode == errcode.Cancelled && ctx.Err() != nil {
+			if r.errCode == errcode.Timeout ||
+				(r.errCode == errcode.Cancelled && ctx.Err() != nil) {
 				return serverErr(errcode.Timeout, "request timeout", 504)
 			}
 			return serverErr(r.errCode, r.errMessage, 500)
