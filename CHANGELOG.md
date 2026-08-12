@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.6.2
+
+- fix(postgres-query): the per-connection `statementTimeoutMs` is now applied with
+  `SET statement_timeout` after connect instead of a startup parameter. The platform's
+  pgbouncer sidecars reject unknown startup parameters ("FATAL: unsupported startup
+  parameter: statement_timeout"), which made every query through a sidecar fail even
+  after v1.6.1's sslmode fix. The sidecars run `pool_mode=session` with
+  `server_reset_query=DISCARD ALL`, so the per-connection SET is safe and reset on
+  release. Verified against the deployed pgbouncer image: timeout takes effect and
+  cancels runaway statements with SQLSTATE 57014.
+
 ## v1.6.1
 
 - fix(postgres-query): connection DSN `sslmode` is now configurable per connection
