@@ -435,6 +435,8 @@ type CitationSourceContentDelta struct {
 //	ContentBlockMemberReasoningContent
 //	ContentBlockMemberSearchResult
 //	ContentBlockMemberText
+//	ContentBlockMemberToolAddition
+//	ContentBlockMemberToolRemoval
 //	ContentBlockMemberToolResult
 //	ContentBlockMemberToolUse
 //	ContentBlockMemberVideo
@@ -535,6 +537,30 @@ type ContentBlockMemberText struct {
 }
 
 func (*ContentBlockMemberText) isContentBlock() {}
+
+// A content block for adding a tool to the available tool set mid-conversation.
+// Each block references a single tool via its tool field. Use within a system
+// role message to make a tool available without re-sending the full tool
+// configuration.
+type ContentBlockMemberToolAddition struct {
+	Value ToolAdditionBlock
+
+	noSmithyDocumentSerde
+}
+
+func (*ContentBlockMemberToolAddition) isContentBlock() {}
+
+// A content block for removing a tool from the available tool set
+// mid-conversation. Each block references a single tool via its tool field. Use
+// within a system role message to remove a tool without re-sending the full tool
+// configuration.
+type ContentBlockMemberToolRemoval struct {
+	Value ToolRemovalBlock
+
+	noSmithyDocumentSerde
+}
+
+func (*ContentBlockMemberToolRemoval) isContentBlock() {}
 
 // The result for a tool request that a model makes.
 type ContentBlockMemberToolResult struct {
@@ -1456,6 +1482,301 @@ type GuardrailAutomatedReasoningValidFinding struct {
 	noSmithyDocumentSerde
 }
 
+// The configuration for inline guardrail checks. Specify one or more check types
+// to run against the messages.
+type GuardrailChecksConfig struct {
+
+	// The content filter check configuration.
+	ContentFilter *GuardrailChecksContentFilterConfig
+
+	// The prompt attack check configuration.
+	PromptAttack *GuardrailChecksPromptAttackConfig
+
+	// The sensitive information check configuration.
+	SensitiveInformation *GuardrailChecksSensitiveInformationConfig
+
+	noSmithyDocumentSerde
+}
+
+// A content block within a message to evaluate.
+//
+// The following types satisfy this interface:
+//
+//	GuardrailChecksContentBlockMemberText
+type GuardrailChecksContentBlock interface {
+	isGuardrailChecksContentBlock()
+}
+
+// The text content to evaluate.
+type GuardrailChecksContentBlockMemberText struct {
+	Value string
+
+	noSmithyDocumentSerde
+}
+
+func (*GuardrailChecksContentBlockMemberText) isGuardrailChecksContentBlock() {}
+
+// The configuration for a single content filter category to evaluate.
+type GuardrailChecksContentFilterCategoryConfig struct {
+
+	// The content filter category to evaluate.
+	//
+	// This member is required.
+	Category GuardrailChecksContentFilterCategory
+
+	noSmithyDocumentSerde
+}
+
+// The configuration for the content filter check, specifying which categories to
+// evaluate.
+type GuardrailChecksContentFilterConfig struct {
+
+	// The content filter categories to evaluate.
+	//
+	// This member is required.
+	Categories []GuardrailChecksContentFilterCategoryConfig
+
+	noSmithyDocumentSerde
+}
+
+// The content filter check results.
+type GuardrailChecksContentFilterResult struct {
+
+	// The per-category content filter results.
+	//
+	// This member is required.
+	Results []GuardrailChecksContentFilterResultEntry
+
+	noSmithyDocumentSerde
+}
+
+// The evaluation result for a single content filter category.
+type GuardrailChecksContentFilterResultEntry struct {
+
+	// The content filter category that was evaluated.
+	//
+	// This member is required.
+	Category GuardrailChecksContentFilterCategory
+
+	// The severity score for the category, ranging from 0.0 to 1.0. Higher values
+	// indicate greater severity.
+	//
+	// This member is required.
+	SeverityScore *float64
+
+	noSmithyDocumentSerde
+}
+
+// The text unit usage for the content filter check.
+type GuardrailChecksContentFilterUsage struct {
+
+	// The number of text units consumed by the content filter check.
+	//
+	// This member is required.
+	TextUnits *int32
+
+	noSmithyDocumentSerde
+}
+
+// A message to evaluate against guardrail checks, containing a role and content
+// blocks.
+type GuardrailChecksMessage struct {
+
+	// The content blocks for the message.
+	//
+	// This member is required.
+	Content []GuardrailChecksContentBlock
+
+	// The role of the message sender.
+	//
+	// This member is required.
+	Role GuardrailChecksRole
+
+	noSmithyDocumentSerde
+}
+
+// The configuration for a single prompt attack category to evaluate.
+type GuardrailChecksPromptAttackCategoryConfig struct {
+
+	// The prompt attack category to evaluate.
+	//
+	// This member is required.
+	Category GuardrailChecksPromptAttackCategory
+
+	noSmithyDocumentSerde
+}
+
+// The configuration for the prompt attack check, specifying which categories to
+// evaluate.
+type GuardrailChecksPromptAttackConfig struct {
+
+	// The prompt attack categories to evaluate.
+	//
+	// This member is required.
+	Categories []GuardrailChecksPromptAttackCategoryConfig
+
+	noSmithyDocumentSerde
+}
+
+// The prompt attack check results.
+type GuardrailChecksPromptAttackResult struct {
+
+	// The per-category prompt attack results.
+	//
+	// This member is required.
+	Results []GuardrailChecksPromptAttackResultEntry
+
+	noSmithyDocumentSerde
+}
+
+// The evaluation result for a single prompt attack category.
+type GuardrailChecksPromptAttackResultEntry struct {
+
+	// The prompt attack category that was evaluated.
+	//
+	// This member is required.
+	Category GuardrailChecksPromptAttackCategory
+
+	// The severity score for the category, ranging from 0.0 to 1.0. Higher values
+	// indicate greater severity.
+	//
+	// This member is required.
+	SeverityScore *float64
+
+	noSmithyDocumentSerde
+}
+
+// The text unit usage for the prompt attack check.
+type GuardrailChecksPromptAttackUsage struct {
+
+	// The number of text units consumed by the prompt attack check.
+	//
+	// This member is required.
+	TextUnits *int32
+
+	noSmithyDocumentSerde
+}
+
+// The results from the guardrail checks evaluation, organized by check type.
+type GuardrailChecksResults struct {
+
+	// The content filter check results.
+	ContentFilter *GuardrailChecksContentFilterResult
+
+	// The prompt attack check results.
+	PromptAttack *GuardrailChecksPromptAttackResult
+
+	// The sensitive information check results.
+	SensitiveInformation *GuardrailChecksSensitiveInformationResult
+
+	noSmithyDocumentSerde
+}
+
+// The configuration for the sensitive information check, specifying which entity
+// types to detect.
+type GuardrailChecksSensitiveInformationConfig struct {
+
+	// The sensitive information entity types to detect.
+	//
+	// This member is required.
+	Entities []GuardrailChecksSensitiveInformationEntityConfig
+
+	noSmithyDocumentSerde
+}
+
+// The configuration for a single sensitive information entity type to detect.
+type GuardrailChecksSensitiveInformationEntityConfig struct {
+
+	// The PII entity type to detect.
+	//
+	// This member is required.
+	Type GuardrailChecksSensitiveInformationEntityType
+
+	noSmithyDocumentSerde
+}
+
+// The sensitive information check results.
+type GuardrailChecksSensitiveInformationResult struct {
+
+	// The detected sensitive information entities.
+	//
+	// This member is required.
+	Results []GuardrailChecksSensitiveInformationResultEntry
+
+	// Specifies whether the results were truncated because the number of detected
+	// entities exceeded the maximum limit.
+	Truncated *bool
+
+	noSmithyDocumentSerde
+}
+
+// The detection result for a single sensitive information entity found in the
+// evaluated messages.
+type GuardrailChecksSensitiveInformationResultEntry struct {
+
+	// The start character offset of the detected entity within the content block.
+	//
+	// This member is required.
+	BeginOffset *int32
+
+	// The confidence score for the detection, ranging from 0.0 to 1.0. Higher values
+	// indicate greater confidence.
+	//
+	// This member is required.
+	ConfidenceScore *float64
+
+	// The zero-based index of the content block within the message where the entity
+	// was detected.
+	//
+	// This member is required.
+	ContentIndex *int32
+
+	// The end character offset of the detected entity within the content block.
+	//
+	// This member is required.
+	EndOffset *int32
+
+	// The zero-based index of the message in the input messages array where the
+	// entity was detected.
+	//
+	// This member is required.
+	MessageIndex *int32
+
+	// The PII entity type that was detected.
+	//
+	// This member is required.
+	Type GuardrailChecksSensitiveInformationEntityType
+
+	noSmithyDocumentSerde
+}
+
+// The text unit usage for the sensitive information check.
+type GuardrailChecksSensitiveInformationUsage struct {
+
+	// The number of text units consumed by the sensitive information check.
+	//
+	// This member is required.
+	TextUnits *int32
+
+	noSmithyDocumentSerde
+}
+
+// The text unit usage for the guardrail checks evaluation, organized by check
+// type.
+type GuardrailChecksUsageResults struct {
+
+	// The text unit usage for the content filter check.
+	ContentFilter *GuardrailChecksContentFilterUsage
+
+	// The text unit usage for the prompt attack check.
+	PromptAttack *GuardrailChecksPromptAttackUsage
+
+	// The text unit usage for the sensitive information check.
+	SensitiveInformation *GuardrailChecksSensitiveInformationUsage
+
+	noSmithyDocumentSerde
+}
+
 // Configuration information for a guardrail that you use with the [Converse] operation.
 //
 // [Converse]: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html
@@ -2288,6 +2609,14 @@ type MessageStopEvent struct {
 // [ConverseStream]: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ConverseStream.html
 type OutputConfig struct {
 
+	// The effort level for the model to use when generating a response. Higher effort
+	// levels allow the model to spend more time reasoning before responding. Supported
+	// values are low , medium , high , xhigh , and max .
+	//
+	// When extended thinking is disabled, the effort level is capped at high . Use
+	// effort high or below, or enable thinking to use higher effort levels.
+	Effort *string
+
 	// Structured output parameters to control the model's text response.
 	TextFormat *OutputFormat
 
@@ -2731,6 +3060,20 @@ type ToolMemberToolSpec struct {
 
 func (*ToolMemberToolSpec) isTool() {}
 
+// A content block for adding a tool to the available tool set mid-conversation.
+// Each block references a single tool via its tool field. Use within a system
+// role message to make a tool available without re-sending the full tool
+// configuration.
+type ToolAdditionBlock struct {
+
+	// A reference to the tool to add to the available tool set.
+	//
+	// This member is required.
+	Tool *ToolReference
+
+	noSmithyDocumentSerde
+}
+
 // Determines which tools the model should request in a call to Converse or
 // ConverseStream . For more information, see [Call a tool with the Converse API] in the Amazon Bedrock User Guide.
 //
@@ -2813,6 +3156,38 @@ type ToolInputSchemaMemberJson struct {
 }
 
 func (*ToolInputSchemaMemberJson) isToolInputSchema() {}
+
+// A reference to a tool in the tool configuration. Used with ToolAdditionBlock
+// and ToolRemovalBlock to identify which tool to add or remove mid-conversation.
+type ToolReference struct {
+
+	// The name of the tool. Must match the name of a tool declared in the top-level
+	// tool configuration.
+	Name *string
+
+	// The name of the MCP server that provides the tool. Required when referencing an
+	// MCP tool.
+	ServerName *string
+
+	// The type of tool reference.
+	Type *string
+
+	noSmithyDocumentSerde
+}
+
+// A content block for removing a tool from the available tool set
+// mid-conversation. Each block references a single tool via its tool field. Use
+// within a system role message to remove a tool without re-sending the full tool
+// configuration.
+type ToolRemovalBlock struct {
+
+	// A reference to the tool to remove from the available tool set.
+	//
+	// This member is required.
+	Tool *ToolReference
+
+	noSmithyDocumentSerde
+}
 
 // A tool result block that contains the results for a tool request that the model
 // previously made. For more information, see [Call a tool with the Converse API]in the Amazon Bedrock User Guide.
@@ -3139,6 +3514,7 @@ func (*UnknownUnionMember) isCountTokensInput()                         {}
 func (*UnknownUnionMember) isDocumentContentBlock()                     {}
 func (*UnknownUnionMember) isDocumentSource()                           {}
 func (*UnknownUnionMember) isGuardrailAutomatedReasoningFinding()       {}
+func (*UnknownUnionMember) isGuardrailChecksContentBlock()              {}
 func (*UnknownUnionMember) isGuardrailContentBlock()                    {}
 func (*UnknownUnionMember) isGuardrailConverseContentBlock()            {}
 func (*UnknownUnionMember) isGuardrailConverseImageSource()             {}

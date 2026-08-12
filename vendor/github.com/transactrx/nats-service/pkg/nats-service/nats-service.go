@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dlclark/regexp2"
@@ -29,6 +30,7 @@ type NatService struct {
 	chunkCache                  *ttlcache.Cache[string, [][]byte]
 	endPoints                   []*NatsEndpoint
 	endpointStats               map[string]*EndPointStats // stats per endpoint path
+	endpointStatsMu             sync.Mutex                // guards endpointStats (handlers run concurrently)
 	basePath                    string
 	queueName                   string
 	description                 string

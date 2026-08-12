@@ -1,5 +1,38 @@
 # Changelog
 
+## v1.6.0
+
+- feat(builtin): five node types promoted from backendBatchProcessingAI into the
+  library and registered by `RegisterDefaults` — `tool/postgres-query` (read-only
+  SELECT over named connections), `tool/mongo-query` (read-only find/aggregate/count),
+  `tool/rabbitmq-management` (read-only Management-API inspection), `tool/web-fetch`
+  (HTTPS GET → stripped text), and `admin/prompt-rewrite` (streaming AI prompt editor).
+  **Additive: no existing interface, node type, or option changed; all prior workflows
+  behave identically.** New deps: `mongo-driver/v2`, `pgxmock/v4` (test).
+- feat(web-fetch): SSRF guard — `https`-only and host-denylist checks run on the initial
+  URL **and every redirect hop**, and a dial-time control blocks loopback / RFC1918 /
+  link-local (incl. `169.254.169.254`) / CGNAT `100.64.0.0/10` / IPv6-ULA addresses.
+  `allowPrivateHosts` opts out for internal endpoints.
+- feat(mongo-query): refuses write/JS operators (`$out`, `$merge`, `$where`, `$function`,
+  `$accumulator`) before reaching the driver; `find`/`aggregate` cap results and set a
+  `truncated` flag; a bare `{"$date": …}` root returns a validation error instead of
+  panicking.
+- feat(postgres-query, mongo-query, rabbitmq-management): the declared per-connection
+  timeouts (`statementTimeoutMs` / `queryTimeoutMs` / `requestTimeoutMs`) are now
+  enforced (were parsed but ignored). Timeout/deadline errors surface as a typed
+  `timeout` `ToolError`. `truncated` flag added to `postgres-query`.
+- feat(tools): `failurePolicy` is configurable on `postgres-query`, `mongo-query`,
+  `rabbitmq-management`, and `web-fetch` (default `surface-to-llm`).
+- perf(prompt-rewrite): the Bedrock client is built once in `Init` (behind an interface)
+  instead of per request.
+- build(deps): all modules upgraded to latest minor/patch (within-major, no breaking
+  bumps) — `pgx/v5` 5.10.0, `nats.go` 1.53.1, `nats-service` 1.4.46, the aws-sdk-go-v2
+  suite (bedrock 1.66.5, bedrockruntime 1.57.2, dynamodb 1.63.2, s3 1.107.1, …),
+  `smithy-go` 1.27.7, `gofiber` 2.52.14, `golang.org/x/*`.
+- tests: per-node suites for every hardening path (SSRF redirect/dial guard, operator
+  blocklist, timeout enforcement, truncation flags, panic-safety). Verified compatible
+  with `opensearchAiChatApi` and `powerlineClaimSearchWebApp` (both compile clean).
+
 ## v1.5.1
 
 - fix(agent): empty tool results are padded ("(tool returned no output)") — Bedrock

@@ -180,7 +180,6 @@ func (ns *NatService) handleApiDocsRequest(msg *NatsMessage) *NatsServiceError {
 	return nil
 }
 
-
 // buildEndpointDocs creates documentation for all registered endpoints
 func (ns *NatService) buildEndpointDocs() []EndpointDoc {
 	docs := make([]EndpointDoc, 0, len(ns.endPoints))
@@ -335,8 +334,14 @@ func (ns *NatService) registerStatsEndpoint() {
 // handleStatsRequest responds to stats requests with this instance's statistics
 func (ns *NatService) handleStatsRequest(msg *nats.Msg) {
 	// Build stats for all endpoints
-	endpointStats := make([]EndpointStatsSnapshot, 0, len(ns.endpointStats))
+	ns.endpointStatsMu.Lock()
+	trackers := make([]*EndPointStats, 0, len(ns.endpointStats))
 	for _, stats := range ns.endpointStats {
+		trackers = append(trackers, stats)
+	}
+	ns.endpointStatsMu.Unlock()
+	endpointStats := make([]EndpointStatsSnapshot, 0, len(trackers))
+	for _, stats := range trackers {
 		endpointStats = append(endpointStats, stats.GetStats())
 	}
 
@@ -359,8 +364,12 @@ func (ns *NatService) handleStatsRequest(msg *nats.Msg) {
 	}
 }
 
-// getOrCreateEndpointStats returns the stats tracker for an endpoint, creating it if needed
+// getOrCreateEndpointStats returns the stats tracker for an endpoint,
+// creating it if needed. Endpoint handlers run on concurrent goroutines, so
+// the map itself must be guarded (the tracker has its own internal locking).
 func (ns *NatService) getOrCreateEndpointStats(path string) *EndPointStats {
+	ns.endpointStatsMu.Lock()
+	defer ns.endpointStatsMu.Unlock()
 	if stats, ok := ns.endpointStats[path]; ok {
 		return stats
 	}
