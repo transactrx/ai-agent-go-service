@@ -141,3 +141,31 @@ func TestToolSpecUsesConfiguredName(t *testing.T) {
 func newToolForTest(cfg Config, pools map[string]Pool) *Tool {
 	return &Tool{cfg: cfg, pools: pools}
 }
+
+func TestBuildDSNDefaultsToPrefer(t *testing.T) {
+	dsn, err := buildDSN(ConnConfig{Host: "db.example.com", User: "u", Database: "prod"}, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "postgres://u:pw@db.example.com:5433/prod?sslmode=prefer"
+	if dsn != want {
+		t.Fatalf("dsn = %q, want %q", dsn, want)
+	}
+}
+
+func TestBuildDSNSSLModeDisableForSidecar(t *testing.T) {
+	dsn, err := buildDSN(ConnConfig{Host: "localhost", Port: "5433", User: "u", Database: "prod", SSLMode: "disable"}, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "postgres://u:pw@localhost:5433/prod?sslmode=disable"
+	if dsn != want {
+		t.Fatalf("dsn = %q, want %q", dsn, want)
+	}
+}
+
+func TestBuildDSNRejectsInvalidSSLMode(t *testing.T) {
+	if _, err := buildDSN(ConnConfig{Host: "h", User: "u", Database: "d", SSLMode: "yes-please"}, "pw"); err == nil {
+		t.Fatal("expected error for invalid sslMode")
+	}
+}

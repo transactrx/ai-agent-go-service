@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -217,7 +219,23 @@ type Tool struct {
 	node.BaseTool
 	cfg     Config
 	clients map[string]MongoAPI
-	owned   []*mongo.Client // closed in Close()
+	// defaultDBs maps connection name -> the database named in the
+	// connection URI's path. Populated at Init; the URI (and therefore the
+	// per-environment database it names) comes from each deployment's own
+	// secret, so this is the environment-correct default.
+	defaultDBs map[string]string
+	owned      []*mongo.Client // closed in Close()
+}
+
+// uriDefaultDB extracts the database from a Mongo connection URI path
+// (mongodb://.../<db>?..., mongodb+srv://.../<db>?...). Returns "" when the
+// URI names no database or cannot be parsed.
+func uriDefaultDB(uri string) string {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return ""
+	}
+	return strings.Trim(u.Path, "/")
 }
 
 func (t *Tool) Spec() node.NodeSpec {
@@ -235,6 +253,7 @@ func (t *Tool) Init(ctx context.Context, env node.NodeEnv) error {
 		return nil
 	}
 	t.clients = map[string]MongoAPI{}
+	t.defaultDBs = map[string]string{}
 	for name, cc := range t.cfg.Connections {
 		uri, err := env.Secret(cc.URIEnv)
 		if err != nil {
@@ -245,6 +264,7 @@ func (t *Tool) Init(ctx context.Context, env node.NodeEnv) error {
 			return fmt.Errorf("mongo-query %s: connect: %w", name, err)
 		}
 		t.clients[name] = &clientAdapter{c: mc}
+		t.defaultDBs[name] = uriDefaultDB(uri.Reveal())
 		t.owned = append(t.owned, mc)
 	}
 	return nil
@@ -269,13 +289,15 @@ func (t *Tool) ToolSpec() node.ToolSpec {
 		InputSchema: json.RawMessage(`{
 			"type":"object",
 			"properties":{
-				"connection":{"type":"string"},"database":{"type":"string"},"collection":{"type":"string"},
+				"connection":{"type":"string"},
+				"database":{"type":"string","description":"Optional; defaults to the connection's own database. Omit unless the connection explicitly allows others."},
+				"collection":{"type":"string"},
 				"op":{"type":"string","enum":["find","aggregate","count"]},
 				"filter":{"type":"object"},
 				"projection":{"type":"object"},"sort":{"type":"object"},"limit":{"type":"integer"},
 				"pipeline":{"type":"array","items":{"type":"object"}}
 			},
-			"required":["connection","database","collection","op"]
+			"required":["connection","collection","op"]
 		}`),
 	}
 }
@@ -301,8 +323,24 @@ func (t *Tool) Invoke(ctx context.Context, args json.RawMessage) (json.RawMessag
 	if !ok {
 		return nil, fmt.Errorf("unknown connection %q", in.Connection)
 	}
-	if !containsString(cc.AllowedDatabases, in.Database) {
-		return nil, fmt.Errorf("database %q not in allowed list %v for connection %q", in.Database, cc.AllowedDatabases, in.Connection)
+	// Resolve the database. The connection URI (from the deployment's own
+	// secret) names the environment-correct database; an omitted input
+	// database falls back to it, and an empty allowedDatabases list means
+	// "only the URI's database". A non-empty allowedDatabases keeps the
+	// explicit allowlist contract.
+	defaultDB := t.defaultDBs[in.Connection]
+	if in.Database == "" {
+		in.Database = defaultDB
+		if in.Database == "" {
+			return nil, fmt.Errorf("database is required: connection %q's URI names no default database", in.Connection)
+		}
+	}
+	if len(cc.AllowedDatabases) > 0 {
+		if !containsString(cc.AllowedDatabases, in.Database) {
+			return nil, fmt.Errorf("database %q not in allowed list %v for connection %q", in.Database, cc.AllowedDatabases, in.Connection)
+		}
+	} else if in.Database != defaultDB {
+		return nil, fmt.Errorf("database %q not allowed for connection %q (only its default database %q; omit \"database\" to use it)", in.Database, in.Connection, defaultDB)
 	}
 	api, ok := t.clients[in.Connection]
 	if !ok {
