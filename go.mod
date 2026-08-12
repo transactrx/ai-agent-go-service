@@ -9,6 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.6
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.57.3
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.101.0
+	github.com/aws/smithy-go v1.27.1
 	github.com/gofiber/contrib/websocket v1.3.4
 	github.com/gofiber/fiber/v2 v2.52.10
 	github.com/gofiber/session/v2 v2.0.2
@@ -17,8 +18,10 @@ require (
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/nats-io/nats-server/v2 v2.14.0
 	github.com/nats-io/nats.go v1.52.0
+	github.com/pashagolub/pgxmock/v4 v4.9.0
 	github.com/transactrx/nats-service v1.4.45
 	github.com/transactrx/trx-gofiber-session v0.0.103
+	go.mongodb.org/mongo-driver/v2 v2.8.0
 )
 
 require (
@@ -39,7 +42,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.31.3 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.36.6 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.43.3 // indirect
-	github.com/aws/smithy-go v1.27.1 // indirect
 	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/fasthttp/session/v2 v2.5.9 // indirect
 	github.com/fasthttp/websocket v1.5.12 // indirect
@@ -62,6 +64,10 @@ require (
 	github.com/tinylib/msgp v1.3.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.71.0 // indirect
+	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
+	github.com/xdg-go/scram v1.2.0 // indirect
+	github.com/xdg-go/stringprep v1.0.4 // indirect
+	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
 	golang.org/x/crypto v0.52.0 // indirect
 	golang.org/x/net v0.54.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect

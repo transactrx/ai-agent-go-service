@@ -11,11 +11,16 @@ import (
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/bedrock"
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/clientui"
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/dynamomemory"
+	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/mongoquery"
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/natschat"
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/opensearch"
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/pgmemory"
+	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/postgresquery"
+	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/promptrewrite"
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/quickchart"
+	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/rabbitmqmanagement"
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/serpapi"
+	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/webfetch"
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/node"
 )
 
@@ -40,5 +45,10 @@ func RegisterDefaults(reg *node.Registry) error {
 		reg.Register("tool/ui-pick-row", clientui.PickRowFactory),
 		reg.Register("tool/ui-ask-number", clientui.AskNumberFactory),
 		reg.Register("tool/ui-ask-long-text", clientui.AskLongTextFactory),
+		reg.Register("tool/postgres-query", postgresquery.Factory),
+		reg.Register("tool/mongo-query", mongoquery.Factory),
+		reg.Register("tool/rabbitmq-management", rabbitmqmanagement.Factory),
+		reg.Register("tool/web-fetch", webfetch.Factory),
+		reg.Register("admin/prompt-rewrite", promptrewrite.Factory),
 	)
 }
