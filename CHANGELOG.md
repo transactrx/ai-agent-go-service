@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.6.1
+
+- fix(postgres-query): connection DSN `sslmode` is now configurable per connection
+  (`sslMode`, validated against the libpq set) and defaults to **`prefer`** instead of
+  the previous hardcoded `require`. `require` could never negotiate with the platform's
+  localhost pgbouncer sidecars (no TLS listener), which made the tool unusable in the
+  standard ECS topology; `prefer` matches the platform convention (powerlineClaimSearchApi
+  DSNs carry no sslmode) — TLS is still negotiated whenever the server offers it, and
+  deployments with an off-task DBHOST can pin `require`/`verify-full` via config.
+- feat(mongo-query): the `database` input is now optional — it defaults to the database
+  named in the connection URI's path (e.g. `.../devrepository?...`), so each environment's
+  secret carries its own database. With no `allowedDatabases` configured, only that
+  URI-default database is permitted (clear error otherwise); a non-empty `allowedDatabases`
+  keeps the previous allowlist behavior unchanged.
+
 ## v1.6.0
 
 - feat(builtin): five node types promoted from backendBatchProcessingAI into the

@@ -24,6 +24,34 @@ type Pool interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
+// validSSLModes is the libpq sslmode allowlist for ConnConfig.SSLMode.
+var validSSLModes = map[string]bool{
+	"disable": true, "allow": true, "prefer": true,
+	"require": true, "verify-ca": true, "verify-full": true,
+}
+
+// buildDSN assembles the pool DSN for one connection. Port defaults to
+// "5433" and sslMode to "prefer" — the libpq default and the TransactRx
+// platform convention (powerlineClaimSearchApi): TLS is negotiated with
+// hosts that offer it and falls back to plaintext for localhost pgbouncer
+// sidecars, which have no TLS listener. An sslMode outside the libpq set is
+// a configuration error surfaced at Init.
+func buildDSN(cc ConnConfig, password string) (string, error) {
+	port := cc.Port
+	if port == "" {
+		port = "5433"
+	}
+	sslMode := cc.SSLMode
+	if sslMode == "" {
+		sslMode = "prefer"
+	}
+	if !validSSLModes[sslMode] {
+		return "", fmt.Errorf("invalid sslMode %q (allowed: disable, allow, prefer, require, verify-ca, verify-full)", sslMode)
+	}
+	return fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s",
+		url.QueryEscape(cc.User), url.QueryEscape(password), cc.Host, port, cc.Database, sslMode), nil
+}
+
 // ConnConfig holds per-connection settings.
 type ConnConfig struct {
 	Host               string `json:"host"`
@@ -33,6 +61,12 @@ type ConnConfig struct {
 	PasswordEnv        string `json:"passwordEnv"` // env VAR NAME, resolved via env.Secret
 	MaxRowsDefault     int    `json:"maxRowsDefault,omitempty"`
 	StatementTimeoutMs int    `json:"statementTimeoutMs,omitempty"`
+	// SSLMode sets libpq sslmode for the connection (default "prefer", the
+	// libpq default: negotiates TLS when the server offers it, plaintext
+	// otherwise — e.g. a localhost pgbouncer sidecar, which has no TLS
+	// listener and holds its own upstream TLS). Set "require" or stricter
+	// when the connection leaves the task.
+	SSLMode string `json:"sslMode,omitempty"`
 }
 
 // Config is decoded from the workflow-JSON config block.
@@ -87,12 +121,10 @@ func (t *Tool) Init(ctx context.Context, env node.NodeEnv) error {
 		if err != nil {
 			return fmt.Errorf("postgres-query %s: %w", name, err)
 		}
-		port := cc.Port
-		if port == "" {
-			port = "5433"
+		dsn, err := buildDSN(cc, pw.Reveal())
+		if err != nil {
+			return fmt.Errorf("postgres-query %s: %w", name, err)
 		}
-		dsn := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=require",
-			url.QueryEscape(cc.User), url.QueryEscape(pw.Reveal()), cc.Host, port, cc.Database)
 		pcfg, err := pgxpool.ParseConfig(dsn)
 		if err != nil {
 			return fmt.Errorf("postgres-query %s: parse config: %w", name, err)

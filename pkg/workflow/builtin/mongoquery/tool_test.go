@@ -355,3 +355,85 @@ func TestToolSpecDefaultsName(t *testing.T) {
 func newToolForTest(cfg Config, clients map[string]MongoAPI) *Tool {
 	return &Tool{cfg: cfg, clients: clients}
 }
+
+func TestURIDefaultDB(t *testing.T) {
+	for uri, want := range map[string]string{
+		"mongodb+srv://u:p@prod-pl-0.example.mongodb.net/devrepository?retryWrites=true": "devrepository",
+		"mongodb://u:p@host:27017/repository":                                            "repository",
+		"mongodb+srv://u:p@host.example.net/?retryWrites=true":                           "",
+		"mongodb://u:p@host:27017":                                                       "",
+	} {
+		if got := uriDefaultDB(uri); got != want {
+			t.Errorf("uriDefaultDB(%q) = %q, want %q", uri, got, want)
+		}
+	}
+}
+
+func TestMongoQuery_OmittedDatabaseUsesURIDefault(t *testing.T) {
+	fake := &fakeMongo{countResult: 7}
+	cfg := Config{ToolDescription: "d", Connections: map[string]ConnConfig{
+		"prod": {}, // no allowlist: URI default only
+	}}
+	tool := newToolForTest(cfg, map[string]MongoAPI{"prod": fake})
+	tool.defaultDBs = map[string]string{"prod": "devrepository"}
+
+	args, _ := json.Marshal(map[string]any{
+		"connection": "prod", "collection": "batches", "op": "count",
+	})
+	if _, err := tool.Invoke(context.Background(), args); err != nil {
+		t.Fatalf("omitted database should fall back to URI default, got %v", err)
+	}
+}
+
+func TestMongoQuery_EmptyAllowlistRejectsOtherDatabases(t *testing.T) {
+	fake := &fakeMongo{}
+	cfg := Config{ToolDescription: "d", Connections: map[string]ConnConfig{
+		"prod": {},
+	}}
+	tool := newToolForTest(cfg, map[string]MongoAPI{"prod": fake})
+	tool.defaultDBs = map[string]string{"prod": "devrepository"}
+
+	args, _ := json.Marshal(map[string]any{
+		"connection": "prod", "database": "repository", "collection": "batches", "op": "count",
+	})
+	if _, err := tool.Invoke(context.Background(), args); err == nil {
+		t.Fatal("database outside the URI default should be rejected when no allowlist is set")
+	}
+}
+
+func TestMongoQuery_NoDefaultAndNoDatabaseErrors(t *testing.T) {
+	fake := &fakeMongo{}
+	cfg := Config{ToolDescription: "d", Connections: map[string]ConnConfig{
+		"prod": {},
+	}}
+	tool := newToolForTest(cfg, map[string]MongoAPI{"prod": fake})
+
+	args, _ := json.Marshal(map[string]any{
+		"connection": "prod", "collection": "batches", "op": "count",
+	})
+	if _, err := tool.Invoke(context.Background(), args); err == nil {
+		t.Fatal("expected error when database omitted and URI names no default")
+	}
+}
+
+func TestMongoQuery_AllowlistStillHonored(t *testing.T) {
+	fake := &fakeMongo{countResult: 1}
+	cfg := Config{ToolDescription: "d", Connections: map[string]ConnConfig{
+		"prod": {AllowedDatabases: []string{"repository", "other"}},
+	}}
+	tool := newToolForTest(cfg, map[string]MongoAPI{"prod": fake})
+	tool.defaultDBs = map[string]string{"prod": "repository"}
+
+	ok, _ := json.Marshal(map[string]any{
+		"connection": "prod", "database": "other", "collection": "c", "op": "count",
+	})
+	if _, err := tool.Invoke(context.Background(), ok); err != nil {
+		t.Fatalf("allowlisted database rejected: %v", err)
+	}
+	bad, _ := json.Marshal(map[string]any{
+		"connection": "prod", "database": "forbidden", "collection": "c", "op": "count",
+	})
+	if _, err := tool.Invoke(context.Background(), bad); err == nil {
+		t.Fatal("non-allowlisted database should be rejected")
+	}
+}
