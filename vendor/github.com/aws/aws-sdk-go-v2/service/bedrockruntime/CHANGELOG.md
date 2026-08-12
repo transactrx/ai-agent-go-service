@@ -1,3 +1,88 @@
+# v1.57.2 (2026-08-10)
+
+* **Dependency Update**: Update to smithy-go v1.27.7.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.57.1 (2026-08-05)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.57.0 (2026-07-31.2)
+
+* **Feature**: Added support for mid-conversation tool changes in the Amazon Bedrock Converse and ConverseStream APIs
+* **Dependency Update**: Updated to the latest SDK module versions
+* **Dependency Update**: Upgrade to smithy-go v1.27.6 to fix various serde issues in HTTP binding services.
+
+# v1.56.2 (2026-07-29)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.56.1 (2026-07-28)
+
+* **Dependency Update**: Update to smithy-go v1.27.5.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.56.0 (2026-07-21)
+
+* **Feature**: Add an option to clients to disable clock skew
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.55.1 (2026-07-13)
+
+* No change notes available for this release.
+
+# v1.55.0 (2026-07-06)
+
+* **Feature**: Add request serialization snapshot tests.
+
+# v1.54.2 (2026-07-01)
+
+* **Bug Fix**: Bump smithy-go to 1.27.3, fix JSON encorder for document.Number, endpoint host label format validation and CBOR union serialization on new serde
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.54.1 (2026-06-29)
+
+* No change notes available for this release.
+
+# v1.54.0 (2026-06-15)
+
+* **Feature**: InvokeGuardrailChecks API evaluates prompts and responses against safety checks (content filters, prompt attacks, sensitive info) without creating guardrail resources. It's a detect-only API, returning numeric scores so you can build adaptive logic as per your application.
+
+# v1.53.5 (2026-06-08)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.53.4 (2026-06-04)
+
+* **Dependency Update**: Update to smithy-go v1.27.1 to fix several union-related deserialization bugs in schema-serde-enabled services.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.53.3 (2026-06-03)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.53.2 (2026-06-02)
+
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.53.1 (2026-05-29)
+
+* **Dependency Update**: Update to smithy-go v1.26.0.
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.53.0 (2026-05-28)
+
+* **Feature**: Support system role in message
+* **Dependency Update**: Updated to the latest SDK module versions
+
+# v1.52.0 (2026-05-21)
+
+* **Feature**: Adding new BDD representation of endpoint ruleset
+
+# v1.51.0 (2026-05-20)
+
+* **Feature**: Supporting Request Metadata for Invoke Model and Invoke Model with Response Stream
+
 # v1.50.6 (2026-04-29)
 
 * **Dependency Update**: Update to smithy-go v1.25.1.
