@@ -132,8 +132,19 @@ func (t *Tool) Init(ctx context.Context, env node.NodeEnv) error {
 		// Server-side statement timeout — the config field is the contract the
 		// workflow declares; without this a pg_sleep() or unindexed scan holds
 		// a read-replica connection for the whole agent turn.
+		//
+		// Applied via SET after connect, NOT as a startup parameter
+		// (RuntimeParams): the platform's pgbouncer sidecars only allow
+		// extra_float_digits through ignore_startup_parameters and reject any
+		// other startup parameter with "FATAL: unsupported startup parameter".
+		// The sidecars run pool_mode=session with server_reset_query=DISCARD ALL,
+		// so a per-connection SET is safe and is reset on release.
 		if cc.StatementTimeoutMs > 0 {
-			pcfg.ConnConfig.RuntimeParams["statement_timeout"] = fmt.Sprintf("%d", cc.StatementTimeoutMs)
+			stmt := fmt.Sprintf("SET statement_timeout = %d", cc.StatementTimeoutMs)
+			pcfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+				_, err := conn.Exec(ctx, stmt)
+				return err
+			}
 		}
 		pool, err := pgxpool.NewWithConfig(ctx, pcfg)
 		if err != nil {
