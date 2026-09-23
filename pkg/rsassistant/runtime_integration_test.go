@@ -171,9 +171,17 @@ func TestRuntimePublishesEligibleWorkflowsAndBridgesVerifiedIdentity(t *testing.
 	cli := agentclient.NewFromConn(nc)
 
 	// Discovery: exactly one card, carrying the shared access pair.
-	cards, err := cli.Discover(context.Background(), wire.DiscoverFilter{}, 500*time.Millisecond)
-	if err != nil {
-		t.Fatal(err)
+	// nats-agent Start() does not flush its discover subscription, so poll the
+	// way RSAssistant does instead of relying on a single scatter-gather.
+	var cards []wire.AgentCard
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		cards, err = cli.Discover(context.Background(), wire.DiscoverFilter{}, 300*time.Millisecond)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(cards) > 0 {
+			break
+		}
 	}
 	if len(cards) != 1 || cards[0].Name != "claimSearch" || cards[0].Access == nil ||
 		cards[0].Access.AppID != "APPX" || cards[0].Access.FunctionID != "FNX" || cards[0].Description != "Claims Q&A" {

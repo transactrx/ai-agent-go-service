@@ -13,11 +13,11 @@
 - feat(natschat): `ChatEndpoint` read-only accessors on `trigger/nats-chat`.
 - feat(loader): `LoadResult.RSAssistant` / `Workflow.RSAssistant` carry the raw
   manifest (nil when absent). No behavior change for existing files.
-- build: add `github.com/transactrx/nats-agent v0.2.0`. **Minimum Go is now 1.26.5**
-  (nats-agent declares it; `go mod tidy` raises the `go` directive). Consumers
-  building in `golang:1.25*` images (which set `GOTOOLCHAIN=local`) must move to a
-  1.26.5+ image. CI (`go.yml`, `release.yaml`, `docker-compose.yml`) now builds and tests on
-  the latest Go family, 1.27 (`1.27.x` / `golang:1.27-alpine`). Test-only
+- build: add `github.com/transactrx/nats-agent v0.2.0` (requires Go 1.26.5).
+  **Minimum Go is now 1.27.0** (`go 1.27.0` directive, latest Go family). Consumers
+  building in older `golang:*` images (which set `GOTOOLCHAIN=local`) must move to
+  `golang:1.27-alpine` or newer. CI (`go.yml`, `release.yaml`, `docker-compose.yml`)
+  builds and tests on `1.27.x` / `golang:1.27-alpine`. Test-only
   `nats-server` v2.14.0 → v2.14.3.
 
 ## v1.6.2

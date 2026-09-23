@@ -81,4 +81,4 @@ The NATS user must be allowed to publish and subscribe on `trx.agent.>`,
 
 ## Requirements
 
-Go 1.26.5 or newer (nats-agent v0.2.0 declares `go 1.26.5`). CI builds on the Go 1.27 family.
+Go 1.27.0 or newer (module `go` directive; nats-agent v0.2.0 itself needs 1.26.5).

@@ -2324,7 +2324,7 @@ Release (after user approval of the PR into Development): `git tag v1.7.0 && git
 ## Revisions (2026-09-23, during implementation)
 
 - **Go 1.26.5 minimum.** nats-agent v0.2.0 declares `go 1.26.5`; `go mod tidy` raises this
-  module's `go` directive from 1.25.2 (kept at that minimum). CI moved to the latest Go family
+  module's `go` directive from 1.25.2; then raised to `go 1.27.0` (user decision). CI on the latest Go family
   (user decision): `go.yml`/`release.yaml` go-version `1.27.x`, `docker-compose.yml` test image
   `golang:1.27-alpine` (golang images set `GOTOOLCHAIN=local`).
   Test-only nats-server v2.14.0 → v2.14.3.
