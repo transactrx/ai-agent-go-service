@@ -17,6 +17,7 @@ import (
 	"github.com/transactrx/ai-agent-go-service/pkg/config"
 	"github.com/transactrx/ai-agent-go-service/pkg/promptadmin"
 	"github.com/transactrx/ai-agent-go-service/pkg/promptstore"
+	"github.com/transactrx/ai-agent-go-service/pkg/rsassistant"
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/engine"
 	"github.com/transactrx/ai-agent-go-service/pkg/workflowlist"
 )
@@ -140,6 +141,25 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 	logger.Print("service started")
 
+	// RSAssistant agents (additive, RSASSISTANT_ENABLED=true only): publish
+	// every eligible workflow as its own nats-agent agent. Failures disable the
+	// feature with a log line; the engine keeps serving its existing subjects.
+	var rsa *rsassistant.Runtime
+	if rsassistant.EnabledFromEnv(os.LookupEnv) {
+		r, rerr := rsassistant.Start(ctx, rsassistant.Deps{
+			Engine:        eng,
+			Logger:        logger,
+			RepositoryURL: s.repositoryURL,
+			LookupEnv:     os.LookupEnv,
+		})
+		if rerr != nil {
+			logger.Printf("boot: rsassistant agents disabled: %v", rerr)
+		} else {
+			rsa = r
+			logger.Printf("boot: rsassistant agents published: %v", r.Names())
+		}
+	}
+
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
@@ -147,6 +167,9 @@ func (s *Service) Run(ctx context.Context) error {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	if rsa != nil {
+		rsa.Shutdown()
+	}
 	_ = eng.Shutdown(shutdownCtx)
 	_ = natservice.Shutdown()
 	return nil

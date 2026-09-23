@@ -30,6 +30,7 @@ import (
 	"net/url"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -270,7 +271,7 @@ type client struct {
 	mpay       int32
 	msubs      int32
 	mcl        int32
-	mu         sync.Mutex
+	mu         sync.RWMutex
 	cid        uint64
 	start      time.Time
 	nonce      []byte
@@ -558,6 +559,13 @@ func (c *client) GetNonce() []byte {
 	defer c.mu.Unlock()
 
 	return c.nonce
+}
+
+// GetID returns the client ID
+func (c *client) GetID() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.cid
 }
 
 // GetName returns the application supplied name for the connection.
@@ -935,10 +943,10 @@ func (c *client) applyAccountLimits() {
 			atomic.StoreInt32(&c.mpay, clampInt64ToInt32(uc.Limits.Payload))
 			c.msubs = clampInt64ToInt32(uc.Limits.Subs)
 			if uc.IssuerAccount != _EMPTY_ && uc.IssuerAccount != uc.Issuer {
-				if scope, ok := c.acc.signingKeys[uc.Issuer]; ok {
+				if scope, ok := c.acc.hasIssuer(uc.Issuer); ok {
 					if userScope, ok := scope.(*jwt.UserScope); ok {
 						// if signing key disappeared or changed and we don't get here, the client will be disconnected
-						c.mpay = clampInt64ToInt32(userScope.Template.Limits.Payload)
+						atomic.StoreInt32(&c.mpay, clampInt64ToInt32(userScope.Template.Limits.Payload))
 						c.msubs = clampInt64ToInt32(userScope.Template.Limits.Subs)
 					}
 				}
@@ -962,13 +970,13 @@ func (c *client) applyAccountLimits() {
 	if mSubs == 0 {
 		mSubs = jwt.NoLimit
 	}
-	wasUnlimited := c.mpay == jwt.NoLimit
+	wasUnlimited := atomic.LoadInt32(&c.mpay) == jwt.NoLimit
 	if minLimit(&c.mpay, mPay) && !wasUnlimited {
-		c.Errorf("Max Payload set to %d from server overrides account or user config", opts.MaxPayload)
+		c.Debugf("Max Payload set to %d from server overrides account or user config", opts.MaxPayload)
 	}
 	wasUnlimited = c.msubs == jwt.NoLimit
 	if minLimit(&c.msubs, mSubs) && !wasUnlimited {
-		c.Errorf("Max Subscriptions set to %d from server overrides account or user config", opts.MaxSubs)
+		c.Debugf("Max Subscriptions set to %d from server overrides account or user config", opts.MaxSubs)
 	}
 	if c.subsAtLimit() {
 		go func() {
@@ -998,6 +1006,7 @@ func (c *client) RegisterUser(user *User) {
 		// Reset perms to nil in case client previously had them.
 		c.perms = nil
 		c.mperms = nil
+		c.darray = nil
 	} else {
 		c.setPermissions(user.Permissions)
 	}
@@ -1035,11 +1044,30 @@ func (c *client) RegisterNkeyUser(user *NkeyUser) error {
 		// Reset perms to nil in case client previously had them.
 		c.perms = nil
 		c.mperms = nil
+		c.darray = nil
 	} else {
 		c.setPermissions(user.Permissions)
 	}
 	c.mu.Unlock()
 	return nil
+}
+
+func (c *client) updateDefaultPermissions(perms *Permissions) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.user == nil || !c.user.defaultPerms {
+		return false
+	}
+	if perms == nil {
+		c.user.Permissions = nil
+		c.perms = nil
+		c.mperms = nil
+		c.darray = nil
+		return true
+	}
+	c.user.Permissions = perms.clone()
+	c.setPermissions(c.user.Permissions)
+	return true
 }
 
 func splitSubjectQueue(sq string) ([]byte, []byte, error) {
@@ -1061,6 +1089,8 @@ func (c *client) setPermissions(perms *Permissions) {
 		return
 	}
 	c.perms = &permissions{}
+	c.mperms = nil
+	c.darray = nil
 	slcache := c.srv != nil && !c.srv.getOpts().NoSublistCache
 
 	// Loop over publish permissions
@@ -1092,7 +1122,7 @@ func (c *client) setPermissions(perms *Permissions) {
 	if perms.Subscribe != nil {
 		var err error
 		if len(perms.Subscribe.Allow) > 0 {
-			c.perms.sub.allow = NewSublist(slcache)
+			c.perms.sub.allow = NewSublistNoCache()
 		}
 		for _, subSubject := range perms.Subscribe.Allow {
 			sub := &subscription{}
@@ -1104,7 +1134,7 @@ func (c *client) setPermissions(perms *Permissions) {
 			c.perms.sub.allow.Insert(sub)
 		}
 		if len(perms.Subscribe.Deny) > 0 {
-			c.perms.sub.deny = NewSublist(slcache)
+			c.perms.sub.deny = NewSublistNoCache()
 			// Also hold onto this array for later.
 			c.darray = perms.Subscribe.Deny
 		}
@@ -1201,38 +1231,40 @@ func (c *client) mergeDenyPermissions(what denyType, denyPubs []string) {
 	if c.perms == nil {
 		c.perms = &permissions{}
 	}
-	slcache := c.srv != nil && !c.srv.getOpts().NoSublistCache
-	var perms []*perm
-	switch what {
-	case pub:
-		perms = []*perm{&c.perms.pub}
-	case sub:
-		perms = []*perm{&c.perms.sub}
-	case both:
-		perms = []*perm{&c.perms.pub, &c.perms.sub}
-	}
-	for _, p := range perms {
-		if p.deny == nil {
-			p.deny = NewSublist(slcache)
+	if what == pub || what == both {
+		if c.perms.pub.deny == nil {
+			c.perms.pub.deny = NewSublistForServer(c.srv)
 		}
-	FOR_DENY:
-		for _, subj := range denyPubs {
-			r := p.deny.Match(subj)
-			for _, v := range r.qsubs {
-				for _, s := range v {
-					if string(s.subject) == subj {
-						continue FOR_DENY
-					}
-				}
-			}
-			for _, s := range r.psubs {
+		mergeDenyPerm(&c.perms.pub, denyPubs)
+	}
+	if what == sub || what == both {
+		if c.perms.sub.deny == nil {
+			// Avoid sublist cache contention in canSubscribe.
+			c.perms.sub.deny = NewSublistNoCache()
+		}
+		mergeDenyPerm(&c.perms.sub, denyPubs)
+	}
+}
+
+// mergeDenyPerm inserts new deny permissions, skipping subjects that already exist.
+func mergeDenyPerm(p *perm, denyPubs []string) {
+FOR_DENY:
+	for _, subj := range denyPubs {
+		r := p.deny.Match(subj)
+		for _, v := range r.qsubs {
+			for _, s := range v {
 				if string(s.subject) == subj {
 					continue FOR_DENY
 				}
 			}
-			sub := &subscription{subject: []byte(subj)}
-			p.deny.Insert(sub)
 		}
+		for _, s := range r.psubs {
+			if string(s.subject) == subj {
+				continue FOR_DENY
+			}
+		}
+		sub := &subscription{subject: []byte(subj)}
+		p.deny.Insert(sub)
 	}
 }
 
@@ -1533,6 +1565,11 @@ func (c *client) readLoop(pre []byte) {
 					acc.stats.ln.inBytes += int64(inBytes)
 				}
 				acc.stats.Unlock()
+			}
+
+			if c.kind == CLIENT {
+				atomic.AddInt64(&s.inClientMsgs, inMsgs)
+				atomic.AddInt64(&s.inClientBytes, inBytes)
 			}
 
 			atomic.AddInt64(&s.inMsgs, inMsgs)
@@ -2607,7 +2644,7 @@ func (c *client) generateClientInfoJSON(info Info, includeClientIP bool) []byte 
 	if includeClientIP {
 		info.ClientIP = c.host
 	}
-	info.MaxPayload = c.mpay
+	info.MaxPayload = atomic.LoadInt32(&c.mpay)
 	if c.isWebsocket() {
 		info.ClientConnectURLs = info.WSConnectURLs
 		// Otherwise lame duck info can panic
@@ -2684,6 +2721,12 @@ func (c *client) processPing() {
 		srv.mu.Lock()
 		info := srv.copyInfo()
 		c.mu.Lock()
+		// Keep the in-process tls_required override from the initial INFO,
+		// otherwise this async INFO would flip it back to true.
+		if c.iproc && info.TLSRequired && !c.flags.isSet(didTLSFirst) {
+			info.TLSRequired = false
+			info.TLSAvailable = true
+		}
 		info.RemoteAccount = c.acc.Name
 		info.IsSystemAccount = c.acc == srv.SystemAccount()
 		info.ConnectInfo = true
@@ -2821,9 +2864,7 @@ func (c *client) processHeaderPub(arg, remaining []byte) error {
 		// Do this only for CLIENT connections.
 		if c.kind == CLIENT && c.pa.hdr > 0 && len(remaining) > 0 {
 			hdr := remaining[:min(len(remaining), c.pa.hdr)]
-			if td, ok := c.allowedMsgTraceDest(hdr, false); ok && td != _EMPTY_ {
-				c.initAndSendIngressErrEvent(hdr, td, ErrMaxPayload)
-			}
+			c.sendMsgTraceIngressErrEvent(hdr, ErrMaxPayload)
 		}
 		c.maxPayloadViolation(c.pa.size, maxPayload)
 		return ErrMaxPayload
@@ -3240,9 +3281,9 @@ func (c *client) addShadowSub(sub *subscription, ime *ime) (*subscription, error
 	return &nsub, nil
 }
 
-// canSubscribe determines if the client is authorized to subscribe to the
-// given subject. Assumes caller is holding lock.
-func (c *client) canSubscribe(subject string, optQueue ...string) bool {
+// canSubscribeInternal determines if the client is authorized to subscribe to
+// the given subject. Assumes caller is holding at least a read lock.
+func (c *client) canSubscribeInternal(subject string, optQueue ...string) bool {
 	if c.perms == nil {
 		return true
 	}
@@ -3287,23 +3328,32 @@ func (c *client) canSubscribe(subject string, optQueue ...string) bool {
 			// If the queue appears in the deny list, then DO NOT allow.
 			allowed = !queueMatches(queue, r.qsubs)
 		}
+	}
+	return allowed
+}
 
-		// We use the actual subscription to signal us to spin up the deny mperms
-		// and cache. We check if the subject is a wildcard that intersects any of
-		// the deny clauses.
-		// FIXME(dlc) - We could be smarter and track when these go away and remove.
-		if allowed && c.mperms == nil && subjectHasWildcard(subject) {
-			// Whip through the deny array and check if this wildcard subject can
-			// overlap with any denied deliveries.
-			for _, sub := range c.darray {
-				if SubjectsCollide(sub, subject) {
-					c.loadMsgDenyFilter()
-					break
-				}
+// canSubscribe determines if the client is authorized to subscribe to the
+// given subject and initializes the delivery-time deny filter when needed.
+// Assumes caller is holding the write lock.
+func (c *client) canSubscribe(subject string, optQueue ...string) bool {
+	if !c.canSubscribeInternal(subject, optQueue...) {
+		return false
+	}
+	// We use the actual subscription to signal us to spin up the deny mperms
+	// and cache. We check if the subject is a wildcard that intersects any of
+	// the deny clauses.
+	// FIXME(dlc) - We could be smarter and track when these go away and remove.
+	if c.mperms == nil && subjectHasWildcard(subject) {
+		// Whip through the deny array and check if this wildcard subject can
+		// overlap with any denied deliveries.
+		for _, sub := range c.darray {
+			if SubjectsCollide(sub, subject) {
+				c.loadMsgDenyFilter()
+				break
 			}
 		}
 	}
-	return allowed
+	return true
 }
 
 func queueMatches(queue string, qsubs [][]*subscription) bool {
@@ -4064,41 +4114,6 @@ func (c *client) pubAllowed(subject string) bool {
 	return c.pubAllowedFullCheck(subject, true, false)
 }
 
-// allowedMsgTraceDest returns the trace destination if present and authorized.
-// It only considers static publish permissions and does not consume dynamic
-// reply permissions because the client is not publishing the trace event itself.
-func (c *client) allowedMsgTraceDest(hdr []byte, hasLock bool) (string, bool) {
-	if len(hdr) == 0 {
-		return _EMPTY_, true
-	}
-	td := sliceHeader(MsgTraceDest, hdr)
-	if len(td) == 0 || bytes.Equal(td, traceDestDisabledAsBytes) {
-		return _EMPTY_, true
-	}
-	dest := bytesToString(td)
-	if c.kind == CLIENT {
-		if hasGWRoutedReplyPrefix(td) {
-			return dest, false
-		}
-		var acc *Account
-		var srv *Server
-		if !hasLock {
-			c.mu.Lock()
-		}
-		acc, srv = c.acc, c.srv
-		if !hasLock {
-			c.mu.Unlock()
-		}
-		if bytes.HasPrefix(td, clientNRGPrefix) && srv != nil && acc != srv.SystemAccount() {
-			return dest, false
-		}
-	}
-	if c.perms != nil && (c.perms.pub.allow != nil || c.perms.pub.deny != nil) && !c.pubAllowedFullCheck(dest, false, hasLock) {
-		return dest, false
-	}
-	return dest, true
-}
-
 // pubAllowedFullCheck checks on all publish permissioning depending
 // on the flag for dynamic reply permissions.
 func (c *client) pubAllowedFullCheck(subject string, fullCheck, hasLock bool) bool {
@@ -4285,13 +4300,6 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 			return false, true
 		}
 	}
-	if c.pa.hdr > 0 {
-		if td, ok := c.allowedMsgTraceDest(msg[:c.pa.hdr], true); !ok {
-			c.mu.Unlock()
-			c.pubPermissionViolation(stringToBytes(td))
-			return false, true
-		}
-	}
 	c.mu.Unlock()
 
 	// Check if the client is trying to publish to reserved NRG subjects.
@@ -4419,7 +4427,7 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 	if c.srv.gateway.enabled {
 		reply := c.pa.reply
 		if len(c.pa.deliver) > 0 && c.kind == JETSTREAM && len(reply) > 0 && !replyHasJSAckSuffix(reply) {
-			reply = append(reply, '@')
+			reply = append(slices.Clip(reply), '@')
 			reply = append(reply, c.pa.deliver...)
 		}
 		didDeliver = c.sendMsgToGateways(acc, msg, c.pa.subject, reply, qnames, false) || didDeliver
@@ -4467,7 +4475,7 @@ func (c *client) handleGWReplyMap(msg []byte) bool {
 	if c.srv.gateway.enabled {
 		reply := c.pa.reply
 		if len(c.pa.deliver) > 0 && c.kind == JETSTREAM && len(reply) > 0 && !replyHasJSAckSuffix(reply) {
-			reply = append(reply, '@')
+			reply = append(slices.Clip(reply), '@')
 			reply = append(reply, c.pa.deliver...)
 		}
 		c.sendMsgToGateways(c.acc, msg, c.pa.subject, reply, nil, false)
@@ -4477,7 +4485,7 @@ func (c *client) handleGWReplyMap(msg []byte) bool {
 
 // Used to setup the response map for a service import request that has a reply subject.
 func (c *client) setupResponseServiceImport(acc *Account, si *serviceImport, tracking bool, header http.Header) *serviceImport {
-	rsi := si.acc.addRespServiceImport(acc, string(c.pa.reply), si, tracking, header)
+	rsi := si.acc.addRespServiceImport(acc, string(c.pa.reply), si, tracking, header, nil)
 	if si.latency != nil {
 		if c.rtt == 0 {
 			// We have a service import that we are tracking but have not established RTT.
@@ -4540,7 +4548,8 @@ func removeHeaderIfPrefixPresent(hdr []byte, prefix string) []byte {
 		}
 		index += start
 		if index < 1 || hdr[index-1] != '\n' {
-			return hdr
+			index += len(prefix)
+			continue
 		}
 
 		end := bytes.Index(hdr[index+len(prefix):], []byte(_CRLF_))
@@ -4783,6 +4792,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	}
 	siAcc := si.acc
 	allowTrace := si.atrc
+	isMsgTraceResp := isResponse && si.mt != nil
 	acc.mu.RUnlock()
 
 	// We have a special case where JetStream pulls in all service imports through one export.
@@ -4935,6 +4945,12 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 		flags |= pmrIgnoreEmptyQueueFilter
 	}
 
+	// If this is a response service import that arrived via a route, allow delivery
+	// to route subscriptions. Service import replies use one-time _R_ subjects.
+	if isResponse && c.kind == ROUTER {
+		flags |= pmrAllowSendFromRouteToRoute
+	}
+
 	// We will be calling back into processMsgResults since we are now being called as a normal sub.
 	// We need to take care of the c.in.rts, so save off what is there and use a local version. We
 	// will put back what was there after.
@@ -4945,6 +4961,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	c.in.rts = lrts[:0]
 
 	var skipProcessing bool
+	var mtrsi *serviceImport
 	// If message tracing enabled, add the service import trace.
 	if mt != nil {
 		mt.addServiceImportEvent(siAcc.GetName(), string(pacopy.subject), to)
@@ -4963,6 +4980,12 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 				// remote.
 				msg = c.setHeader(MsgTraceDest, MsgTraceDestDisabled, msg)
 			}
+		} else {
+			// This code is invoked from a single thread so mutation of mt.dest
+			// here is safe.
+			dest := mt.dest
+			defer func() { mt.dest = dest }()
+			mtrsi, msg = mt.setupResponseServiceImport(c, acc, si, msg)
 		}
 	}
 
@@ -4985,15 +5008,8 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	c.in.rts = orts
 	c.pa = pacopy
 
-	// Before we undo didDeliver based on tracing and last mile, mark in the c.pa which informs us of no responders status.
-	// If we override due to tracing and traceOnly we do not want to send back a no responders.
+	// Mark in the c.pa if the message was delivered or not (no responders status).
 	c.pa.delivered = didDeliver
-
-	// If this was a message trace but we skip last-mile delivery, we need to
-	// do the remove, so:
-	if mt != nil && traceOnly && didDeliver {
-		didDeliver = false
-	}
 
 	// Determine if we should remove this service import. This is for response service imports.
 	// We will remove if we did not deliver, or if we are a response service import and we are
@@ -5008,6 +5024,34 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 		acc.mu.Lock()
 		si.ts = time.Now().UnixNano()
 		acc.mu.Unlock()
+	}
+	// This is a message trace...
+	if mt != nil {
+		// If it was not routed anywhere, we can remove mtrsi that we created earlier.
+		mt.siMu.RLock()
+		remove := mt.rsi == nil
+		mt.siMu.RUnlock()
+		if remove {
+			reason := rsiOk
+			if !didDeliver {
+				reason = rsiNoDelivery
+			}
+			siAcc.removeRespServiceImport(mtrsi, reason)
+		}
+		// If we skip last-mile delivery, we need to remove the rsi that we
+		// may have created if there was a reply subject.
+		if rsi != nil && traceOnly {
+			shouldRemove = true
+		}
+
+	} else if isMsgTraceResp {
+		shouldRemove = false
+		if !strings.HasPrefix(si.to, replyPrefix) {
+			var evt MsgTraceEvent
+			if err := json.Unmarshal(msg, &evt); err == nil {
+				si.mt.handleRespServiceImport(&evt)
+			}
+		}
 	}
 
 	// Cleanup of a response service import
@@ -5119,6 +5163,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 	var dlvExtraSize int64
 	var dlvRouteMsgs int64
 	var dlvLeafMsgs int64
+	var dlvClientMsgs int64
 
 	// We need to know if this is a MQTT producer because they send messages
 	// without CR_LF (we otherwise remove the size of CR_LF from message size).
@@ -5132,12 +5177,15 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 		totalBytes := dlvMsgs*int64(len(msg)) + dlvExtraSize
 		routeBytes := dlvRouteMsgs*int64(len(msg)) + dlvExtraSize
 		leafBytes := dlvLeafMsgs*int64(len(msg)) + dlvExtraSize
+		// dlvExtraSize applies to route/leaf header overhead, not client deliveries
+		clientBytes := dlvClientMsgs * int64(len(msg))
 
 		// For non MQTT producers, remove the CR_LF * number of messages
 		if !prodIsMQTT {
 			totalBytes -= dlvMsgs * int64(LEN_CR_LF)
 			routeBytes -= dlvRouteMsgs * int64(LEN_CR_LF)
 			leafBytes -= dlvLeafMsgs * int64(LEN_CR_LF)
+			clientBytes -= dlvClientMsgs * int64(LEN_CR_LF)
 		}
 
 		if acc != nil {
@@ -5158,6 +5206,9 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 		if srv := c.srv; srv != nil {
 			atomic.AddInt64(&srv.outMsgs, dlvMsgs)
 			atomic.AddInt64(&srv.outBytes, totalBytes)
+
+			atomic.AddInt64(&srv.outClientMsgs, dlvClientMsgs)
+			atomic.AddInt64(&srv.outClientBytes, clientBytes)
 		}
 	}
 
@@ -5253,6 +5304,9 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			// We don't count internal deliveries, so do only when sub.icb is nil.
 			if sub.icb == nil {
 				dlvMsgs++
+				if sub.client.kind == CLIENT {
+					dlvClientMsgs++
+				}
 			}
 			didDeliver = true
 		}
@@ -5480,6 +5534,8 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 						dlvRouteMsgs++
 					case LEAF:
 						dlvLeafMsgs++
+					case CLIENT:
+						dlvClientMsgs++
 					}
 				}
 				// Do the rest even when message delivery was skipped.
@@ -5518,22 +5574,12 @@ sendToRoutesOrLeafs:
 	// already performed, otherwise we'd end up with a duplicate '@' suffix
 	// resulting in a protocol error.
 	if len(deliver) > 0 && len(reply) > 0 && !remapped && !replyHasJSAckSuffix(reply) {
-		reply = append(reply, '@')
+		reply = append(slices.Clip(reply), '@')
 		reply = append(reply, deliver...)
 	}
 
 	// Copy off original pa in case it changes.
 	pa := c.pa
-
-	if mt != nil {
-		// We are going to replace "pa" with our copy of c.pa, but to restore
-		// to the original copy of c.pa, we need to save it again.
-		cpa := pa
-		msg = mt.setOriginAccountHeaderIfNeeded(c, acc, msg)
-		defer func() { c.pa = cpa }()
-		// Update pa with our current c.pa state.
-		pa = c.pa
-	}
 
 	// We address by index to avoid struct copy.
 	// We have inline structs for memory layout and cache coherency.
@@ -6538,10 +6584,20 @@ func (c *client) doTLSHandshake(typ string, solicit bool, url *url.URL, tlsConfi
 		if len(subjs) > 0 {
 			detail = fmt.Sprintf(" (%s)", strings.Join(subjs, "; "))
 		}
-		if kind == CLIENT {
-			c.Errorf("TLS handshake error: %v%s", err, detail)
-		} else {
+		if kind == ROUTER || kind == GATEWAY {
+			// Always surface these as errors, as these ports shouldn't be behind a load
+			// balancer or regularly probed.
 			c.Errorf("TLS %s handshake error: %v%s", typ, err, detail)
+		} else {
+			logf := c.Errorf
+			if isClientProbeTLSHandshakeError(err) {
+				logf = c.Debugf
+			}
+			if kind == CLIENT {
+				logf("TLS handshake error: %v%s", err, detail)
+			} else {
+				logf("TLS %s handshake error: %v%s", typ, err, detail)
+			}
 		}
 		c.closeConnection(TLSHandshakeError)
 
@@ -6571,12 +6627,15 @@ func (c *client) doTLSHandshake(typ string, solicit bool, url *url.URL, tlsConfi
 	return false, err
 }
 
-// getRawAuthUserLock returns the raw auth user for the client.
-// Will acquire the client lock.
-func (c *client) getRawAuthUserLock() string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.getRawAuthUser()
+func isClientProbeTLSHandshakeError(err error) bool {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	var recordHeaderErr tls.RecordHeaderError
+	// Conn is only set by crypto/tls when the invalid record was the peer's
+	// initial handshake bytes, which is the non-TLS probe/load-balancer case.
+	return errors.As(err, &recordHeaderErr) && recordHeaderErr.Conn != nil
 }
 
 // getRawAuthUser returns the raw auth user for the client.
