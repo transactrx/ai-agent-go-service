@@ -12,6 +12,7 @@ import (
 type Workflow struct {
 	ID          string
 	Description string
+	RSAssistant json.RawMessage // raw "rsassistant" manifest from the workflow file, nil when absent
 	Trigger     node.Trigger
 	Nodes       map[string]node.Node
 	TopoOrder   []string

@@ -8,6 +8,9 @@ type rawWorkflow struct {
 	ID          string           `json:"id"`
 	Version     int              `json:"version"`
 	Description string           `json:"description,omitempty"`
+	// RSAssistant is the optional manifest that publishes this workflow as an
+	// RSAssistant (nats-agent) agent. Opaque to the loader; parsed by pkg/rsassistant.
+	RSAssistant json.RawMessage  `json:"rsassistant,omitempty"`
 	Trigger     string           `json:"trigger"`
 	Nodes       []rawNode        `json:"nodes"`
 	Connections []rawConnection  `json:"connections"`

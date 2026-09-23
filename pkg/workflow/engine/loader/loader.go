@@ -15,6 +15,7 @@ import (
 type LoadResult struct {
 	ID          string
 	Description string
+	RSAssistant json.RawMessage // raw "rsassistant" block, nil when absent
 	Trigger     node.Trigger
 	Nodes       map[string]node.Node
 	TopoOrder   []string
@@ -161,6 +162,7 @@ func (l *Loader) LoadOne(ctx context.Context, raw []byte) (*LoadResult, error) {
 	return &LoadResult{
 		ID:          w.ID,
 		Description: w.Description,
+		RSAssistant: w.RSAssistant,
 		Trigger:     trigger,
 		Nodes:       nodes,
 		TopoOrder:   order,
