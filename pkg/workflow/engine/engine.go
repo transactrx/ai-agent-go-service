@@ -212,6 +212,7 @@ func (e *Engine) registerOne(ctx context.Context, raw []byte) error {
 	wf := &Workflow{
 		ID:          res.ID,
 		Description: res.Description,
+		RSAssistant: res.RSAssistant,
 		Trigger:     res.Trigger,
 		Nodes:       res.Nodes,
 		TopoOrder:   res.TopoOrder,

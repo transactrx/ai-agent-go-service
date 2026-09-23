@@ -120,3 +120,34 @@ type chatRequestBody struct {
 	SessionID    string `json:"sessionId,omitempty"`
 	ResponseMode string `json:"responseMode,omitempty"`
 }
+
+// ChatEndpoint is the read-only view of a trigger/nats-chat node used by
+// out-of-band publishers (pkg/rsassistant) to reach a workflow over NATS
+// without touching how the trigger itself serves requests.
+type ChatEndpoint interface {
+	// ChatSubject is "<basePath>.<subject>". Empty before Init has run.
+	ChatSubject() string
+	// ResponseMode is the configured default: "streaming" or "single".
+	ResponseMode() string
+	// AllowsResponseModeOverride reports whether a request body may set responseMode.
+	AllowsResponseModeOverride() bool
+	// RequestTimeout is the configured per-request timeout.
+	RequestTimeout() time.Duration
+}
+
+var _ ChatEndpoint = (*natsChatTrigger)(nil)
+
+func (t *natsChatTrigger) ChatSubject() string {
+	if t.basePath == "" || t.subject == "" {
+		return ""
+	}
+	return t.basePath + "." + t.subject
+}
+
+func (t *natsChatTrigger) ResponseMode() string { return t.cfg.ResponseMode }
+
+func (t *natsChatTrigger) AllowsResponseModeOverride() bool { return t.cfg.AllowResponseModeOverride }
+
+func (t *natsChatTrigger) RequestTimeout() time.Duration {
+	return time.Duration(t.cfg.RequestTimeoutSeconds) * time.Second
+}

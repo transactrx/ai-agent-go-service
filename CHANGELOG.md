@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.7.0
+
+- feat(rsassistant): opt-in publication of eligible `trigger/nats-chat` workflows as
+  RSAssistant-discoverable agents (nats-agent v0.2.0). One agent per eligible
+  workflow (streaming or override-capable, no client-only UI tools), single
+  `access{APP_ID, APP_FUNCTION_ID}` pair, identity verified before the workflow is
+  called, engine headers derived only from the verified identity. Disabled unless
+  `RSASSISTANT_ENABLED=true`. New optional top-level workflow key `rsassistant`
+  (inherited through `extends`). The bridge's own stream client fails fast on a
+  workflow's pre-stream rejection or NATS no-responders. See `docs/RSASSISTANT.md`.
+- feat(natschat): `ChatEndpoint` read-only accessors on `trigger/nats-chat`.
+- feat(loader): `LoadResult.RSAssistant` / `Workflow.RSAssistant` carry the raw
+  manifest (nil when absent). No behavior change for existing files.
+- build: add `github.com/transactrx/nats-agent v0.2.0` (requires Go 1.26.5).
+  **Minimum Go is now 1.27.0** (`go 1.27.0` directive, latest Go family). Consumers
+  building in older `golang:*` images (which set `GOTOOLCHAIN=local`) must move to
+  `golang:1.27-alpine` or newer. CI (`go.yml`, `release.yaml`, `docker-compose.yml`)
+  builds and tests on `1.27.x` / `golang:1.27-alpine`. Test-only
+  `nats-server` v2.14.0 → v2.14.3.
+
 ## v1.6.2
 
 - fix(postgres-query): the per-connection `statementTimeoutMs` is now applied with

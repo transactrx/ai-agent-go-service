@@ -1,6 +1,6 @@
 module github.com/transactrx/ai-agent-go-service
 
-go 1.25.2
+go 1.27.0
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.43.5
@@ -16,9 +16,10 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgerrcode v0.0.0-20250907135507-afb5586c32a6
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/nats-io/nats-server/v2 v2.14.0
+	github.com/nats-io/nats-server/v2 v2.14.3
 	github.com/nats-io/nats.go v1.53.1
 	github.com/pashagolub/pgxmock/v4 v4.9.0
+	github.com/transactrx/nats-agent v0.2.0
 	github.com/transactrx/nats-service v1.4.46
 	github.com/transactrx/trx-gofiber-session v0.0.103
 	go.mongodb.org/mongo-driver/v2 v2.8.0
