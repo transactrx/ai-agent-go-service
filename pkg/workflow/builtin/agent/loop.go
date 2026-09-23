@@ -305,7 +305,12 @@ func (a *agentNode) Process(ctx context.Context, in node.AgentInput, sink node.S
 
 		msgs = append(msgs, node.Message{Role: node.AssistantMsg, Content: assistantBlocks})
 
-		if stopReason == "end_turn" || (stopReason == "" && len(toolCalls) == 0) {
+		// No tool calls means the turn is over, whatever the stop reason
+		// (end_turn, max_tokens, stop_sequence, ...). Looping into the tool
+		// branch with zero calls would append an empty tool_result user
+		// message, which Bedrock rejects ("user messages must have non-empty
+		// content") and turns a long answer into an llm-error.
+		if stopReason == "end_turn" || len(toolCalls) == 0 {
 			// Guard against an empty answer: if the model ends its turn without
 			// writing any text (commonly after a tool error it couldn't
 			// recover from), re-prompt it for a real answer instead of closing
@@ -380,7 +385,7 @@ func (a *agentNode) Process(ctx context.Context, in node.AgentInput, sink node.S
 				a.tracef("turn complete: rewrote chart reference(s) in final answer to match rendered charts")
 				finalMsg = node.Message{Role: node.AssistantMsg, Content: []node.ContentBlock{{Type: node.BlockText, Text: corrected}}}
 			}
-			return a.completeStream(ctx, sink, in, userMsg, finalMsg)
+			return a.completeStream(ctx, sink, in, userMsg, finalMsg, stopReason)
 		}
 
 		// Invoke each tool, build tool_result blocks.
@@ -541,6 +546,10 @@ func (a *agentNode) Process(ctx context.Context, in node.AgentInput, sink node.S
 				}
 			}
 		}
+		if len(toolResults) == 0 {
+			// Defensive: never send an empty user message to the model.
+			return a.failStream(sink, errcode.LLMError, fmt.Errorf("ai/agent: tool turn produced no tool results"))
+		}
 		msgs = append(msgs, node.Message{Role: node.UserMsg, Content: toolResults})
 	}
 
@@ -548,7 +557,9 @@ func (a *agentNode) Process(ctx context.Context, in node.AgentInput, sink node.S
 		fmt.Errorf("ai/agent: reached maxIterations=%d", a.cfg.MaxIterations))
 }
 
-func (a *agentNode) completeStream(ctx context.Context, sink node.StreamSink, in node.AgentInput, userMsg, finalAssistantMsg node.Message) error {
+// completeStream persists the turn and closes the stream. stop is the model's
+// stop reason for the final turn; "" is reported as end_turn.
+func (a *agentNode) completeStream(ctx context.Context, sink node.StreamSink, in node.AgentInput, userMsg, finalAssistantMsg node.Message, stop string) error {
 	if a.mem != nil {
 		id, _ := identity.FromContext(ctx)
 		if err := a.mem.Append(ctx, node.MemoryKey{
@@ -562,7 +573,7 @@ func (a *agentNode) completeStream(ctx context.Context, sink node.StreamSink, in
 	}
 	return sink.Close(ctx, node.StreamEvent{
 		Type: node.StreamComplete,
-		Data: mustJSON(map[string]string{"finalText": lastText(finalAssistantMsg), "messageStop": "end_turn"}),
+		Data: mustJSON(map[string]string{"finalText": lastText(finalAssistantMsg), "messageStop": messageStopOf(stop)}),
 	})
 }
 
@@ -875,4 +886,16 @@ func mustJSON(v any) json.RawMessage {
 func isBlankToolPayload(p json.RawMessage) bool {
 	s := strings.TrimSpace(string(p))
 	return s == "" || s == `""` || s == "null"
+}
+
+// messageStopOf maps the final turn's stop reason onto the complete event's
+// messageStop. An empty reason (some providers omit it) means end_turn;
+// tool_use cannot end a turn here, so it is reported as end_turn too.
+func messageStopOf(stop string) string {
+	switch stop {
+	case "", "tool_use":
+		return "end_turn"
+	default:
+		return stop
+	}
 }
