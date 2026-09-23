@@ -16,7 +16,7 @@ use either or both:
   and streams the reply back. You call `webbridge.Mount(app, Options{...})`. Consumed by
   **powerlineClaimSearchWebApp** (webApp).
 
-Module path: `github.com/transactrx/ai-agent-go-service` (Go 1.25). Private — consumers set
+Module path: `github.com/transactrx/ai-agent-go-service` (Go 1.26.5+ since v1.7.0). Private — consumers set
 `GOPRIVATE=github.com/transactrx/*` and `go get github.com/transactrx/ai-agent-go-service@vX.Y.Z`.
 
 ---
@@ -325,3 +325,9 @@ The bundled `aichat-webix` UI already speaks this protocol
 
 - [DEPLOYMENT.md](DEPLOYMENT.md) — environment variables, NATS wiring, secrets, release/versioning.
 - [MIGRATION.md](MIGRATION.md) — how chatApi and webApp moved onto the library.
+
+## Publishing workflows to RSAssistant
+
+Set `RSASSISTANT_ENABLED=true` and optionally add a top-level `rsassistant`
+block to a workflow. See `docs/RSASSISTANT.md` for eligibility, identity, and
+environment details.
