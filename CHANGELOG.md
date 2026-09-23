@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.7.1
+
+- fix(agent): a model turn that stops with `max_tokens` (or `stop_sequence`) and makes no
+  tool call now completes with its text and reports that `messageStop`. Before, the loop
+  treated it as a tool turn, appended an empty tool_result user message, and the next
+  Bedrock call failed with `user messages must have non-empty content` (`llm-error`),
+  losing a long answer after the full run time. A guard now refuses to send an empty
+  user message.
+- feat(executor): one log line per workflow run with its timings, in both streaming and
+  single mode:
+  `RUN_METRIC event=run.done workflow= request= session= end=complete|error stop= tools= events= first_event_ms= first_text_ms= ms=`.
+  No identity is logged; `request`/`session` correlate with the trigger's lines.
+
 ## v1.7.0
 
 - feat(rsassistant): opt-in publication of eligible `trigger/nats-chat` workflows as

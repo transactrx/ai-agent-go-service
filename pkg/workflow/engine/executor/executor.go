@@ -41,6 +41,11 @@ func New(wf *Workflow, logger *log.Logger, uploader Uploader) *Executor {
 // with a call to executor.Run.
 func (e *Executor) Run(ctx context.Context, evt node.TriggerEvent) error {
 	ctx = identity.WithIdentity(ctx, evt.Identity)
+	if evt.StreamSink != nil {
+		timer := newRunTimer(evt.StreamSink, e.clock)
+		evt.StreamSink = timer
+		defer timer.logDone(e, evt)
+	}
 
 	// Pin RenderCtx for the entire request.
 	var triggerBody any
