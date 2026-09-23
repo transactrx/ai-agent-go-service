@@ -57,8 +57,21 @@ identity did not resolve to an account and a user.
 | `NATS_IDENTITY_BASE_PATH`, `NATS_IDENTITY_VALIDATE_SUBJECT` | `trx.identityservice`, `validateInternalToken` | identity subject |
 | `NATS_URL`, `NATS_JWT`, `NATS_KEY` | required | agent connections (same NATS user as the engine) |
 
-The NATS user must be allowed to publish and subscribe on `trx.agent.>`,
-`_INBOX.>`, and `trx.identityservice.>`.
+NATS permissions (same user as the engine), for each published agent name `<name>`:
+
+| Direction | Subjects | Why |
+|---|---|---|
+| sub | `trx.agent.discover` | discovery (queue group `agent.<name>`) |
+| sub | `trx.agent.<name>.>` | `card`, `ping`, `chat`, `cancel`, `_api_docs`, `_stats` |
+| sub + pub | `trx.agent.<name>_.>` | nats-service chunked large responses |
+| pub | `trx.agent.<name>.>` | same pattern other agents use (e.g. copayAssistant) |
+| pub + sub | `_INBOX.>` | replies, RSAssistant stream subject, identity replies |
+| pub | `<NATS_IDENTITY_BASE_PATH>.>` (`trx.identityservice.>`) | IDT validation |
+| sub | `_discovery.all` | nats-service discovery (engine already needs it) |
+| pub | `<NATS_BASE_PATH>.>`, `<NATS_BASE_PATH>_.>` | bridge → workflow chat subject and stream cancel |
+
+Grant per name rather than `trx.agent.>`: a broad `sub` would let the service
+receive other agents' traffic. A newly published workflow name needs its own entries.
 
 ## Logs
 
