@@ -385,16 +385,26 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		// Gather all open clients.
 		if state == ConnOpen || state == ConnAll {
 			for _, client := range clist {
+				// Snapshot each under the client lock.
+				client.mu.RLock()
+				var cAccName string
+				if client.acc != nil {
+					cAccName = client.acc.Name
+				}
+				cAuthUser := client.getRawAuthUser()
+				cMQTTID := client.getMQTTClientID()
+				client.mu.RUnlock()
+
 				// If we have an account specified we need to filter.
-				if acc != _EMPTY_ && (client.acc == nil || client.acc.Name != acc) {
+				if acc != _EMPTY_ && cAccName != acc {
 					continue
 				}
 				// Do user filtering second
-				if user != _EMPTY_ && client.getRawAuthUserLock() != user {
+				if user != _EMPTY_ && cAuthUser != user {
 					continue
 				}
 				// Do mqtt client ID filtering next
-				if mqttCID != _EMPTY_ && client.getMQTTClientID() != mqttCID {
+				if mqttCID != _EMPTY_ && cMQTTID != mqttCID {
 					continue
 				}
 				openClients = append(openClients, client)
@@ -458,7 +468,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 	}
 	// Closed Clients
 	var needCopy bool
-	if subs || auth {
+	if subs || subsDet || auth {
 		needCopy = true
 	}
 	for _, cc := range closedClients {
@@ -540,18 +550,10 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		sort.Sort(sort.Reverse(SortByRTT{pconns}))
 	}
 
-	minoff := c.Offset
-	maxoff := c.Offset + c.Limit
-
-	maxIndex := totalClients
-
 	// Make sure these are sane.
-	if minoff > maxIndex {
-		minoff = maxIndex
-	}
-	if maxoff > maxIndex {
-		maxoff = maxIndex
-	}
+	maxIndex := totalClients
+	minoff := min(max(c.Offset, 0), maxIndex)
+	maxoff := minoff + min(c.Limit, maxIndex-minoff)
 
 	// Now pare down to the requested size.
 	// TODO(dlc) - for very large number of connections we
@@ -1077,18 +1079,10 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 			sub.client.mu.Unlock()
 			i++
 		}
-		minoff := sz.Offset
-		maxoff := sz.Offset + sz.Limit
-
-		maxIndex := i
-
 		// Make sure these are sane.
-		if minoff > maxIndex {
-			minoff = maxIndex
-		}
-		if maxoff > maxIndex {
-			maxoff = maxIndex
-		}
+		maxIndex := i
+		minoff := min(max(sz.Offset, 0), maxIndex)
+		maxoff := minoff + min(sz.Limit, maxIndex-minoff)
 		sz.Subs = details[minoff:maxoff]
 		sz.Total = len(details)
 	} else {
@@ -1271,10 +1265,14 @@ type Varz struct {
 	Routes                int                    `json:"routes"`                            // Routes is the number of connected route servers
 	Remotes               int                    `json:"remotes"`                           // Remotes is the configured route remote endpoints
 	Leafs                 int                    `json:"leafnodes"`                         // Leafs is the number connected leafnode clients
-	InMsgs                int64                  `json:"in_msgs"`                           // InMsgs is the number of messages this server received
-	OutMsgs               int64                  `json:"out_msgs"`                          // OutMsgs is the number of message this server sent
-	InBytes               int64                  `json:"in_bytes"`                          // InBytes is the number of bytes this server received
-	OutBytes              int64                  `json:"out_bytes"`                         // OutMsgs is the number of bytes this server sent
+	InMsgs                int64                  `json:"in_msgs"`                           // InMsgs is the total number of messages this server received. This includes messages from the clients, routers, gateways and leaf nodes
+	InBytes               int64                  `json:"in_bytes"`                          // InBytes is the total number of bytes this server received. This includes messages from the clients, routers, gateways and leaf nodes
+	InClientMsgs          int64                  `json:"in_client_msgs"`                    // InClientMsgs is the number of messages this server received from the clients
+	InClientBytes         int64                  `json:"in_client_bytes"`                   // InClientBytes is the number of bytes this server received from the clients
+	OutMsgs               int64                  `json:"out_msgs"`                          // OutMsgs is the total number of message this server sent. This includes messages sent to the clients, routers, gateways and leaf nodes
+	OutBytes              int64                  `json:"out_bytes"`                         // OutBytes is the total number of bytes this server sent. This includes messages sent to the clients, routers, gateways and leaf nodes
+	OutClientMsgs         int64                  `json:"out_client_msgs"`                   // OutClientMsgs is the number of messages this server sent to the clients
+	OutClientBytes        int64                  `json:"out_client_bytes"`                  // OutClientBytes is the number of bytes this server sent to the clients
 	SlowConsumers         int64                  `json:"slow_consumers"`                    // SlowConsumers is the total count of clients that were disconnected since start due to being slow consumers
 	StaleConnections      int64                  `json:"stale_connections"`                 // StaleConnections is the total count of stale connections that were detected
 	StalledClients        int64                  `json:"stalled_clients"`                   // StalledClients is the total number of times that clients have been stalled.
@@ -1742,34 +1740,40 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 		}
 		varz.Gateway.Gateways = rgwa
 	}
-	if l := len(ln.Remotes); l > 0 {
-		rlna := make([]RemoteLeafOptsVarz, l)
-		for i, r := range ln.Remotes {
-			var deny *DenyRules
-			if len(r.DenyImports) > 0 || len(r.DenyExports) > 0 {
-				deny = &DenyRules{
-					Imports: r.DenyImports,
-					Exports: r.DenyExports,
-				}
-			}
-			remoteTlsOCSPPeerVerify := s.ocspPeerVerify && r.tlsConfigOpts != nil && r.tlsConfigOpts.OCSPPeerConfig != nil && r.tlsConfigOpts.OCSPPeerConfig.Verify
-
-			rlna[i] = RemoteLeafOptsVarz{
-				LocalAccount:      r.LocalAccount,
-				URLs:              urlsToStrings(r.URLs),
-				TLSTimeout:        r.TLSTimeout,
-				Deny:              deny,
-				TLSOCSPPeerVerify: remoteTlsOCSPPeerVerify,
-			}
-		}
-		varz.LeafNode.Remotes = rlna
-	}
-
 	// Finish setting it up with fields that can be updated during
 	// configuration reload and runtime.
 	s.updateVarzConfigReloadableFields(varz)
 	s.updateVarzRuntimeFields(varz, true, pcpu, rss)
 	return varz
+}
+
+// Builds the list of remote leafnodes for Varz from the given options.
+// Server lock is held on entry.
+func (s *Server) varzLeafNodeRemotes(opts *Options) []RemoteLeafOptsVarz {
+	l := len(opts.LeafNode.Remotes)
+	if l == 0 {
+		return nil
+	}
+	rlna := make([]RemoteLeafOptsVarz, l)
+	for i, r := range opts.LeafNode.Remotes {
+		var deny *DenyRules
+		if len(r.DenyImports) > 0 || len(r.DenyExports) > 0 {
+			deny = &DenyRules{
+				Imports: r.DenyImports,
+				Exports: r.DenyExports,
+			}
+		}
+		remoteTlsOCSPPeerVerify := s.ocspPeerVerify && r.tlsConfigOpts != nil && r.tlsConfigOpts.OCSPPeerConfig != nil && r.tlsConfigOpts.OCSPPeerConfig.Verify
+
+		rlna[i] = RemoteLeafOptsVarz{
+			LocalAccount:      r.LocalAccount,
+			URLs:              urlsToStrings(r.URLs),
+			TLSTimeout:        r.TLSTimeout,
+			Deny:              deny,
+			TLSOCSPPeerVerify: remoteTlsOCSPPeerVerify,
+		}
+	}
+	return rlna
 }
 
 func urlsToStrings(urls []*url.URL) []string {
@@ -1825,6 +1829,7 @@ func (s *Server) updateVarzConfigReloadableFields(v *Varz) {
 	v.Cluster.TLSCertNotAfter = tlsCertNotAfter(opts.Cluster.TLSConfig)
 	v.Gateway.TLSCertNotAfter = tlsCertNotAfter(opts.Gateway.TLSConfig)
 	v.LeafNode.TLSCertNotAfter = tlsCertNotAfter(opts.LeafNode.TLSConfig)
+	v.LeafNode.Remotes = s.varzLeafNodeRemotes(opts)
 	v.MQTT.TLSCertNotAfter = tlsCertNotAfter(opts.MQTT.TLSConfig)
 	v.Websocket.TLSCertNotAfter = tlsCertNotAfter(opts.Websocket.TLSConfig)
 
@@ -1877,6 +1882,10 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 	v.InBytes = atomic.LoadInt64(&s.inBytes)
 	v.OutMsgs = atomic.LoadInt64(&s.outMsgs)
 	v.OutBytes = atomic.LoadInt64(&s.outBytes)
+	v.InClientMsgs = atomic.LoadInt64(&s.inClientMsgs)
+	v.InClientBytes = atomic.LoadInt64(&s.inClientBytes)
+	v.OutClientMsgs = atomic.LoadInt64(&s.outClientMsgs)
+	v.OutClientBytes = atomic.LoadInt64(&s.outClientBytes)
 	v.SlowConsumers = atomic.LoadInt64(&s.slowConsumers)
 	v.StalledClients = atomic.LoadInt64(&s.stalls)
 	v.SlowConsumersStats = &SlowConsumersStats{
@@ -2511,7 +2520,7 @@ func (s *Server) AccountStatz(opts *AccountStatzOptions) (*AccountStatz, error) 
 		s.accounts.Range(func(key, a any) bool {
 			acc := a.(*Account)
 			acc.mu.RLock()
-			if (opts != nil && opts.IncludeUnused) || acc.numLocalConnections() != 0 {
+			if (opts != nil && opts.IncludeUnused) || acc.numLocalConnections() != 0 || acc.numLocalLeafNodes() != 0 {
 				stz.Accounts = append(stz.Accounts, acc.statz())
 			}
 			acc.mu.RUnlock()
@@ -2522,7 +2531,7 @@ func (s *Server) AccountStatz(opts *AccountStatzOptions) (*AccountStatz, error) 
 			if acc, ok := s.accounts.Load(a); ok {
 				acc := acc.(*Account)
 				acc.mu.RLock()
-				if opts.IncludeUnused || acc.numLocalConnections() != 0 {
+				if opts.IncludeUnused || acc.numLocalConnections() != 0 || acc.numLocalLeafNodes() != 0 {
 					stz.Accounts = append(stz.Accounts, acc.statz())
 				}
 				acc.mu.RUnlock()
@@ -2565,21 +2574,11 @@ func ResponseHandler(w http.ResponseWriter, r *http.Request, data []byte) {
 }
 
 // handleResponse handles responses for monitoring routes with a specific HTTP status code.
-func handleResponse(code int, w http.ResponseWriter, r *http.Request, data []byte) {
-	// Get callback from request
-	callback := r.URL.Query().Get("callback")
-	if callback != _EMPTY_ {
-		// Response for JSONP
-		w.Header().Set("Content-Type", "application/javascript")
-		w.WriteHeader(code)
-		fmt.Fprintf(w, "%s(%s)", callback, data)
-	} else {
-		// Otherwise JSON
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.WriteHeader(code)
-		w.Write(data)
-	}
+func handleResponse(code int, w http.ResponseWriter, _ *http.Request, data []byte) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.WriteHeader(code)
+	w.Write(data)
 }
 
 func (reason ClosedState) String() string {
@@ -3177,7 +3176,7 @@ func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optDire
 						if !optCfg {
 							cInfo.Config = nil
 						}
-						sdet.DirectConsumer = append(sdet.Consumer, cInfo)
+						sdet.DirectConsumer = append(sdet.DirectConsumer, cInfo)
 					}
 				}
 			}
@@ -3746,11 +3745,8 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 				if streamFound {
 					// if consumer option is passed, verify that the consumer exists on stream
 					if opts.Consumer != _EMPTY_ {
-						for _, cons := range s.consumers {
-							if cons.name == opts.Consumer {
-								consumerFound = true
-								break
-							}
+						if s.lookupConsumer(opts.Consumer) != nil {
+							consumerFound = true
 						}
 					}
 					break
@@ -4262,9 +4258,10 @@ func (s *Server) Raftz(opts *RaftzOptions) *RaftzStatus {
 			if id == n.id {
 				continue
 			}
+			kp := n.membChange == nil || n.membChange.peer != id
 			peer := RaftzGroupPeer{
 				Name:                s.serverNameForNode(id),
-				Known:               p.kp,
+				Known:               kp,
 				LastReplicatedIndex: p.li,
 			}
 			if !p.ts.IsZero() {

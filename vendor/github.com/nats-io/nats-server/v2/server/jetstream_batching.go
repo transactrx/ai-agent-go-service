@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"math/big"
 	"path/filepath"
@@ -421,6 +422,18 @@ type batchExpectedPerSubject struct {
 	clseq uint64 // Clustered proposal sequence.
 }
 
+// copyCounterSources returns a deep copy of the given counter sources.
+func copyCounterSources(src CounterSources) CounterSources {
+	if src == nil {
+		return nil
+	}
+	dst := make(CounterSources, len(src))
+	for stream, subjects := range src {
+		dst[stream] = maps.Clone(subjects)
+	}
+	return dst
+}
+
 func (diff *batchStagedDiff) commit(mset *stream) {
 	if len(diff.msgIds) > 0 {
 		ts := time.Now().UnixNano()
@@ -451,6 +464,7 @@ func (diff *batchStagedDiff) commit(mset *stream) {
 			if c, ok := mset.inflight[subj]; ok {
 				c.bytes += i.bytes
 				c.ops += i.ops
+				c.schedule = i.schedule
 			} else {
 				mset.inflight[subj] = i
 			}
@@ -530,13 +544,14 @@ func checkMsgHeadersPreClusteredProposal(
 	discard DiscardPolicy, discardNewPer bool, maxMsgSize int, maxMsgs int64, maxMsgsPer int64, maxBytes int64,
 ) ([]byte, []byte, uint64, *ApiError, error) {
 	var incr *big.Int
+	var hasSchedule bool
 
 	// Some header checks must be checked pre proposal.
 	if len(hdr) > 0 {
 		// Since we encode header len as u16 make sure we do not exceed.
 		// Again this works if it goes through but better to be pre-emptive.
 		if len(hdr) > math.MaxUint16 {
-			err := fmt.Errorf("JetStream header size exceeds limits for '%s > %s'", jsa.acc().Name, mset.cfg.Name)
+			err := fmt.Errorf("JetStream header size exceeds limits for '%s > %s'", jsa.acc().Name, name)
 			return hdr, msg, 0, NewJSStreamHeaderExceedsMaximumError(), err
 		}
 		// Counter increments.
@@ -629,9 +644,9 @@ func checkMsgHeadersPreClusteredProposal(
 			initial = *counter.total
 			sources = counter.sources
 		} else if counter, ok = mset.clusteredCounterTotal[subject]; ok {
-			initial = *counter.total
-			sources = counter.sources
 			// Make an explicit copy to separate the staged data from what's committed.
+			initial.Set(counter.total)
+			sources = copyCounterSources(counter.sources)
 			// Don't need to initialize all values, they'll be overwritten later.
 			counter = &msgCounterRunningTotal{ops: counter.ops}
 		} else {
@@ -810,6 +825,7 @@ func checkMsgHeadersPreClusteredProposal(
 			}
 			return hdr, msg, 0, apiErr, apiErr
 		} else if !schedule.IsZero() {
+			hasSchedule = true
 			if !allowMsgSchedules {
 				apiErr := NewJSMessageSchedulesDisabledError()
 				return hdr, msg, 0, apiErr, apiErr
@@ -877,6 +893,26 @@ func checkMsgHeadersPreClusteredProposal(
 			} else if !allowMsgSchedules {
 				apiErr := NewJSMessageSchedulesDisabledError()
 				return hdr, msg, 0, apiErr, apiErr
+			} else {
+				// Check that the to-be-purged subject is a schedule message.
+				// We still allow this message through if there exists no message for this subject,
+				// to remain backward-compatible. An "expected at sequence" check can still be
+				// performed to make this stricter.
+				schedSubj := bytesToString(scheduler)
+				var invalid bool
+				if i, ok := diff.inflight[schedSubj]; ok {
+					invalid = !i.schedule
+				} else if i, ok = mset.inflight[schedSubj]; ok {
+					invalid = !i.schedule
+				} else {
+					var smv StoreMsg
+					sm, _ := mset.store.LoadLastMsg(schedSubj, &smv)
+					invalid = sm != nil && len(sliceHeader(JSSchedulePattern, sm.hdr)) == 0
+				}
+				if invalid {
+					apiErr := NewJSMessageSchedulesSchedulerInvalidError()
+					return hdr, msg, 0, apiErr, apiErr
+				}
 			}
 		} else if !sourced && len(sliceHeader(JSScheduler, hdr)) > 0 {
 			// Clients may only use Nats-Scheduler alongside Nats-Schedule-Next.
@@ -930,8 +966,9 @@ func checkMsgHeadersPreClusteredProposal(
 	if i, ok = diff.inflight[subject]; ok {
 		i.bytes += sz
 		i.ops++
+		i.schedule = hasSchedule
 	} else {
-		i = &inflightSubjectRunningTotal{bytes: sz, ops: 1}
+		i = &inflightSubjectRunningTotal{bytes: sz, ops: 1, schedule: hasSchedule}
 		diff.inflight[subject] = i
 	}
 
