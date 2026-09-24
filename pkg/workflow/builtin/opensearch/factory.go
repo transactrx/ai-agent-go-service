@@ -165,7 +165,7 @@ func (t *opensearchTool) ToolSpec() node.ToolSpec {
 		      "additionalProperties": false
 		    },
 		    "size": {"type": "integer", "minimum": 0, "maximum": 10000},
-		    "aggregations": {"type": "object"},
+		    "aggregations": {"type": "object", "description": "Named OpenSearch aggregations, computed over your query's results, which always include the server's security scope. Allowed types: terms, multi_terms, rare_terms, date_histogram, auto_date_histogram, histogram, range, date_range, filter, filters, missing, composite, nested, avg, sum, min, max, stats, extended_stats, value_count, cardinality, percentiles, percentile_ranks, median_absolute_deviation, weighted_avg, top_hits, and bucket pipelines. global, significant_terms, significant_text, samplers and scripted_metric are rejected. Never try to widen or bypass the security scope."},
 		    "sort": {"type": "array"}
 		  }
 		}`),

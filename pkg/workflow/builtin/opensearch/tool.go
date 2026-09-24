@@ -37,6 +37,13 @@ func (t *opensearchTool) Invoke(ctx context.Context, args json.RawMessage) (json
 		}
 	}
 
+	// 1b. Aggregation allowlist: only types computed over the security-scoped
+	// query (see aggallowlist.go). Rejects "global" and other scope escapes.
+	aggs, err := normalizeAggregations(in.Aggregations)
+	if err != nil {
+		return nil, err
+	}
+
 	// 2. Index pattern guard — element-wise validation against the
 	// workflow-configured allowedIndexPattern. Closes Risk A
 	// (e.g., "prod.cpe-2026-04-30,*" or cross-family lists).
@@ -71,8 +78,8 @@ func (t *opensearchTool) Invoke(ctx context.Context, args json.RawMessage) (json
 	} else {
 		body["size"] = t.cfg.MaxResultSize
 	}
-	if len(in.Aggregations) > 0 {
-		body["aggs"] = json.RawMessage(in.Aggregations)
+	if len(aggs) > 0 {
+		body["aggs"] = aggs // validated tree only; never the raw model input
 	}
 	if len(in.Sort) > 0 {
 		body["sort"] = json.RawMessage(in.Sort)
