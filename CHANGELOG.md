@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.7.2
+
+- **security(opensearch): aggregation allowlist.** The OpenSearch tool now validates the
+  model's `aggregations` before calling OpenSearch and only accepts types that are computed
+  over the security-scoped query (terms, multi_terms, rare_terms, date_histogram,
+  auto_date_histogram, histogram, range, date_range, filter, filters, missing, composite,
+  nested, the metrics, top_hits, and bucket pipelines). `global`, `significant_terms`,
+  `significant_text`, `sampler`, `diversified_sampler`, `scripted_metric` and any unknown
+  type are rejected with an error that tells the model not to work around the security
+  scope. Before, a `global` aggregation ignored the injected account filter and returned
+  other accounts' counts (reproduced in Dev with a restricted SUBMITTER account).
+  The whole tree (nested `aggs`/`aggregations`) is checked; a stringified object is decoded
+  first; OpenSearch receives the re-serialized validated tree, never the raw model bytes.
+  Replay of 90 days of Production queries: only the single `global` query is newly rejected.
+
 ## v1.7.1
 
 - fix(agent): a model turn that stops with `max_tokens` (or `stop_sequence`) and makes no
