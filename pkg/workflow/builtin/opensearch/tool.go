@@ -37,10 +37,30 @@ func (t *opensearchTool) Invoke(ctx context.Context, args json.RawMessage) (json
 		}
 	}
 
+	// 1a. Clause shape: a single clause object is wrapped in a list, so a
+	// model's clause is never dropped; anything else is an error.
+	for k, raw := range in.QueryBody {
+		clauses, err := normalizeClauseList(raw)
+		if err != nil {
+			return nil, fmt.Errorf("tool/opensearch: queryBody.%s must be a list of query clauses", k)
+		}
+		in.QueryBody[k] = clauses
+	}
+
 	// 1b. Aggregation allowlist: only types computed over the security-scoped
 	// query (see aggallowlist.go). Rejects "global" and other scope escapes.
 	aggs, err := normalizeAggregations(in.Aggregations)
 	if err != nil {
+		return nil, err
+	}
+
+	// 1c. Document-read guard (see docread.go): no terms lookup or
+	// more_like_this document in the clauses, aggregations or sort.
+	parts := []json.RawMessage{aggs, in.Sort}
+	for _, clause := range in.QueryBody {
+		parts = append(parts, clause)
+	}
+	if err := rejectDocumentReads(parts...); err != nil {
 		return nil, err
 	}
 
@@ -135,6 +155,31 @@ func buildURL(host, indexPath string) string {
 		url = strings.TrimRight(url, "/") + "/_search"
 	}
 	return url + "?ignore_unavailable=true"
+}
+
+// normalizeClauseList returns raw as a JSON list of clause objects. A single
+// object becomes a one-element list; null/empty stays empty.
+func normalizeClauseList(raw json.RawMessage) (json.RawMessage, error) {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		return nil, nil
+	}
+	if strings.HasPrefix(s, "{") {
+		if !json.Valid([]byte(s)) {
+			return nil, fmt.Errorf("invalid clause")
+		}
+		return json.RawMessage("[" + s + "]"), nil
+	}
+	var list []json.RawMessage
+	if err := json.Unmarshal([]byte(s), &list); err != nil {
+		return nil, err
+	}
+	for _, c := range list {
+		if !strings.HasPrefix(strings.TrimSpace(string(c)), "{") {
+			return nil, fmt.Errorf("clause is not an object")
+		}
+	}
+	return json.RawMessage(s), nil
 }
 
 // buildFinalQuery merges LLM-supplied bool sub-clauses with server-injected
