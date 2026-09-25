@@ -156,7 +156,7 @@ CHANGELOG entry for v1.8.0.
   `ai/bedrock` node `model` → `us.anthropic.claude-opus-5-5`,
   `autoUpdate: false`. The `Single*` variants inherit this.
 - New `workflows/powerlineSearchGateway.json`, `extends: "powerlineSearch"`:
-  - node with the base LLM node id keeps its id, `type` becomes
+  - node `bedrock1` keeps its id, `type` becomes
     `ai/inference-gateway`, config `{ "alias": "${INFERENCE_GATEWAY_ALIAS:MAX_MODEL}",
     "maxTokens": 4096, "model": null, "region": null, "autoUpdate": null }`.
     Connections are inherited unchanged.
