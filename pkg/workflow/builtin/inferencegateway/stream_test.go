@@ -263,6 +263,31 @@ func TestStreamIdleTimeout(t *testing.T) {
 	}
 }
 
+func TestConsumeStreamSubscriptionFailed(t *testing.T) {
+	_, nc := runEmbeddedNATS(t)
+	sub, err := nc.SubscribeSync(nc.NewInbox())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sub.Unsubscribe(); err != nil {
+		t.Fatal(err)
+	}
+	out := make(chan node.LLMEvent, 8)
+	timing := &node.LLMTiming{}
+	go func() {
+		for range out {
+		}
+	}()
+	err = consumeStream(context.Background(), sub, time.Second, out, timing)
+	close(out)
+	if err == nil || !strings.Contains(err.Error(), "subscription failed") {
+		t.Fatalf("err = %v, want subscription failed", err)
+	}
+	if strings.Contains(err.Error(), "idle") {
+		t.Fatalf("err = %v, must not mention idle", err)
+	}
+}
+
 func TestStreamTimeout(t *testing.T) {
 	_, nc := runEmbeddedNATS(t)
 	events := []string{}

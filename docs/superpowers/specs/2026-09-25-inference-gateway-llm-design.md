@@ -48,10 +48,11 @@ default placeholder `example.inferenceGateway`, same rule as the existing
 Gateway limitations that shape this design (fixes belong in the gateway repo):
 
 - No document content block. The node rejects `BlockDocument` turns.
-- Converse backend sends no `thinking` field; the direct path sends
-  `thinking: disabled` for Claude 5.x. The gateway path may therefore reason by
-  default. The bench must report output tokens next to latency so this is
-  visible.
+- Converse backend sends no `thinking` field. Since Bedrock rejects
+  `thinking: disabled` on Claude 5.5+, `ai/bedrock` also sends none for 5.5+
+  (kept only for 5.0–5.4), so on the pinned opus 5.5 both paths run adaptive
+  thinking at the default effort and the comparison is apples to apples; the
+  bench still reports output tokens.
 
 ## 3. Library changes (ai-agent-go-service → v1.8.0)
 

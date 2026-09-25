@@ -13,8 +13,16 @@
   `ai/bedrock` now parses token usage from `message_start` / `message_delta` for it.
 - **fix(bedrock): Claude 5.5+ payload.** `thinking: disabled` is now sent only for Claude 5.0–5.4;
   Bedrock rejects it on 5.5 (`"thinking.type.disabled" is not supported for this model`). 5.5 and
-  newer get no `thinking` field (adaptive default). Forced tool choice (the auto-update probe) on
-  5.5+ is therefore subject to the model's adaptive-thinking rules.
+  newer get no `thinking` field (adaptive default). **Auto-update and Claude 5.5+:** the daily
+  auto-update health probe forces a tool call, and Claude 5.5+ rejects forced `tool_choice` (400
+  ValidationException). The probe therefore always fails on 5.5+, is treated as conclusive, and
+  recovery swaps live traffic to an older validated model. When pinning a 5.5+ model set
+  `autoUpdate: false` (or `AI_BEDROCK_MODEL_ID`). Auto-update also cannot promote a node to 5.5+.
+  Follow-up: skip the forced-tool probe on 5.5+.
+
+## v1.7.3
+
+- fix(opensearch): refuse document reads and keep single-object clauses (document-read guard).
 
 ## v1.7.2
 

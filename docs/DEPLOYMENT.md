@@ -43,11 +43,20 @@ Read by the library at startup:
 | `MODEL_AUTOUPDATE_NOTIFY_SUBJECT` | — | `<NATS_BASE_PATH>.modelAutoUpdate` | Subject for `ai/bedrock` auto-update upgraded/declined notifications |
 | `AI_BEDROCK_MODEL_ID` | — | `""` | Break-glass: when set, every ai/bedrock node uses this model verbatim and auto-update is fully disabled. Empty = auto mode. |
 
+**Claude 5.5+ and auto-update:** the daily auto-update health probe forces a tool call, and Claude
+5.5+ rejects forced `tool_choice` (400 ValidationException). The probe therefore always fails on
+5.5+, is treated as conclusive, and recovery swaps live traffic to an older validated model. When
+pinning a 5.5+ model set `autoUpdate: false` (or `AI_BEDROCK_MODEL_ID`). Auto-update also cannot
+promote a node to 5.5+. Follow-up: skip the forced-tool probe on 5.5+.
+
 ### `llm-timing` log line
 
 Every LLM call (`ai/bedrock` and `ai/inference-gateway`) ends with one line:
 `llm-timing wf=<id> node=<id> provider=<type> model=<invoked id> ttfb_ms=<n> total_ms=<n> in_tok=<n> out_tok=<n> stop=<reason> err=<quoted|->`.
 `ttfb_ms` is request send → first streamed event; unknown values print `-`.
+For `ai/inference-gateway`, `model=` is the invoke id from the gateway's ack; if the gateway's
+capacity fallback re-routes the request before any token was streamed, the line still shows the
+acked id (gateway contract limitation).
 
 ### `ai/bedrock` auto-update notification events
 

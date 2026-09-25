@@ -61,7 +61,7 @@ func (c Config) validate() error {
 		return errors.New("ai/inference-gateway: exactly one of alias, modelId, lab+family is required")
 	}
 	if c.MaxTokens < 0 {
-		return errors.New("ai/inference-gateway: maxTokens must be positive")
+		return errors.New("ai/inference-gateway: maxTokens must not be negative")
 	}
 	if c.StreamTimeoutSeconds < 0 || c.IdleTimeoutSeconds < 0 {
 		return errors.New("ai/inference-gateway: timeouts must be positive")

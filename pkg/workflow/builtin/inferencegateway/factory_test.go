@@ -21,7 +21,7 @@ func TestFactoryConfigValidation(t *testing.T) {
 		{"lab without family", `{"lab":"anthropic"}`, "lab and family must be set together"},
 		{"family without lab", `{"family":"claude-opus"}`, "lab and family must be set together"},
 		{"bad json", `{"alias":1}`, "parse config"},
-		{"negative maxTokens", `{"alias":"A","maxTokens":-1}`, "maxTokens must be positive"},
+		{"negative maxTokens", `{"alias":"A","maxTokens":-1}`, "maxTokens must not be negative"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

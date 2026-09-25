@@ -40,7 +40,7 @@ func (b *bedrockLLM) Stream(ctx context.Context, req node.LLMRequest, out chan<-
 		node.LogLLMTiming(b.logger, b.wfID, b.nodeID, timing)
 	}()
 
-	// The envelope is model-aware (5-generation models need thinking:disabled),
+	// The envelope is model-aware (Claude 5.0–5.4 need thinking:disabled),
 	// and the last-known-good retry can cross a generation boundary, so the
 	// payload is built per attempt from that attempt's model ID.
 	makeInput := func(m string) (*bedrockruntime.InvokeModelWithResponseStreamInput, error) {
@@ -191,9 +191,7 @@ func handleAnthropicChunkStats(ctx context.Context, raw []byte, accum map[int]*n
 					} `json:"usage"`
 				} `json:"message"`
 			}
-			if err := json.Unmarshal(raw, &v); err != nil {
-				return err
-			}
+			_ = json.Unmarshal(raw, &v)
 			st.hasUsage = true
 			st.inputTokens = v.Message.Usage.InputTokens
 		}

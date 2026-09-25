@@ -85,7 +85,10 @@ func consumeStream(ctx context.Context, sub *nats.Subscription, idle time.Durati
 			if ctx.Err() != nil {
 				return fmt.Errorf("ai/inference-gateway: stream: %w", ctx.Err())
 			}
-			return fmt.Errorf("ai/inference-gateway: stream idle for %s without events: %w", idle, err)
+			if errors.Is(err, context.DeadlineExceeded) {
+				return fmt.Errorf("ai/inference-gateway: stream idle for %s without events: %w", idle, err)
+			}
+			return fmt.Errorf("ai/inference-gateway: stream subscription failed: %w", err)
 		}
 		var ev streamEvent
 		if err := json.Unmarshal(m.Data, &ev); err != nil {
@@ -133,6 +136,7 @@ func consumeStream(ctx context.Context, sub *nats.Subscription, idle time.Durati
 			return nil
 		case "error":
 			return errors.New("ai/inference-gateway: gateway stream error: " + ev.Error)
+		default:
 			// messageStart and unknown types: nothing to emit.
 		}
 	}
