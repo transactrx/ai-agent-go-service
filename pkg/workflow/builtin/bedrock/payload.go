@@ -147,13 +147,13 @@ func buildAnthropicPayload(req node.LLMRequest, cfg Config, modelID string) ([]b
 	if req.ToolChoiceName != "" {
 		env.ToolChoice = &toolChoice{Type: "tool", Name: req.ToolChoiceName}
 	}
-	// Claude 5-generation models run adaptive thinking by default and reject
-	// forced tool_choice unless thinking is explicitly disabled. We disable it
-	// for 5+ so behavior, token budget, and multi-turn tool loops stay exactly
-	// as on the 4.x generation; enabling thinking becomes a deliberate future
-	// config feature, never a side effect of an auto-upgrade. Older and
+	// Claude 5.0–5.4 run adaptive thinking by default and reject forced
+	// tool_choice unless thinking is explicitly disabled, so we disable it there.
+	// Claude 5.5+ rejects "disabled" (Bedrock: use thinking.type.adaptive and
+	// output_config.effort); for those we send no thinking field, which is the
+	// same envelope the inferenceGateway Converse path produces. Older and
 	// unparseable model IDs get a byte-identical envelope to before.
-	if p, err := parseModelID(modelID); err == nil && p.major >= 5 {
+	if p, err := parseModelID(modelID); err == nil && p.major == 5 && p.minor < 5 {
 		env.Thinking = &thinkingConfig{Type: "disabled"}
 	}
 	return json.Marshal(env)

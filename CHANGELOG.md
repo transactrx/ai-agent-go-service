@@ -11,6 +11,10 @@
 - **feat: `llm-timing` log line** from both LLM providers, one per call:
   `llm-timing wf= node= provider= model= ttfb_ms= total_ms= in_tok= out_tok= stop= err=`.
   `ai/bedrock` now parses token usage from `message_start` / `message_delta` for it.
+- **fix(bedrock): Claude 5.5+ payload.** `thinking: disabled` is now sent only for Claude 5.0–5.4;
+  Bedrock rejects it on 5.5 (`"thinking.type.disabled" is not supported for this model`). 5.5 and
+  newer get no `thinking` field (adaptive default). Forced tool choice (the auto-update probe) on
+  5.5+ is therefore subject to the model's adaptive-thinking rules.
 
 ## v1.7.2
 
