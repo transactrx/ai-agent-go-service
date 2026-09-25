@@ -11,6 +11,7 @@ import (
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/bedrock"
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/clientui"
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/dynamomemory"
+	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/inferencegateway"
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/mongoquery"
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/natschat"
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/opensearch"
@@ -31,6 +32,7 @@ func RegisterDefaults(reg *node.Registry) error {
 		reg.Register("trigger/nats-chat", natschat.Factory),
 		reg.Register("ai/agent", agent.Factory),
 		reg.Register("ai/bedrock", bedrock.Factory),
+		reg.Register("ai/inference-gateway", inferencegateway.Factory),
 		reg.Register("memory/postgres", pgmemory.Factory),
 		reg.Register("memory/dynamodb", dynamomemory.Factory),
 		reg.Register("tool/opensearch", opensearch.Factory),

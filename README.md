@@ -53,7 +53,7 @@ webbridge.Mount(app, webbridge.Options{
 
 ## Built-in node types
 
-Triggers: `trigger/nats-chat` · LLM: `ai/bedrock` · Orchestrator: `ai/agent` · Memory:
+Triggers: `trigger/nats-chat` · LLM: `ai/bedrock`, `ai/inference-gateway` · Orchestrator: `ai/agent` · Memory:
 `memory/postgres`, `memory/dynamodb` · Tools: `tool/opensearch`, `tool/serpapi`, `tool/quickchart`
 · Client-UI tools: `tool/ui-confirm`, `tool/ui-pick-one`, `tool/ui-pick-many`, `tool/ui-human-input`,
 `tool/ui-ask-date`, `tool/ui-ask-form`, `tool/ui-pick-row`, `tool/ui-ask-number`, `tool/ui-ask-long-text`.

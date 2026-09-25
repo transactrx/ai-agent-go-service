@@ -11,11 +11,11 @@ import (
 func TestBuildRequestFullShape(t *testing.T) {
 	temp := 0.2
 	req := node.LLMRequest{
-		System:    "sys",
-		MaxTokens: 512,
-		Temperature: &temp,
-		Stop:      []string{"END"},
-		Tools:     []node.ToolSpec{{Name: "search", Description: "d", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+		System:         "sys",
+		MaxTokens:      512,
+		Temperature:    &temp,
+		Stop:           []string{"END"},
+		Tools:          []node.ToolSpec{{Name: "search", Description: "d", InputSchema: json.RawMessage(`{"type":"object"}`)}},
 		ToolChoiceName: "search",
 		Messages: []node.Message{
 			{Role: node.UserMsg, Content: []node.ContentBlock{

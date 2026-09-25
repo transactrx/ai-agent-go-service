@@ -112,6 +112,12 @@ engine internals — all coupling goes through the `NodeEnv` passed to `Init` (l
 - **Trigger:** `trigger/nats-chat` — caller-facing contract of the endpoints it registers
   (request shape, single vs streaming consumption): [CHAT-ENDPOINTS.md](CHAT-ENDPOINTS.md)
 - **LLM:** `ai/bedrock` (Claude via AWS Bedrock, optional daily model auto-update)
+- **LLM (gateway):** `ai/inference-gateway` — model calls through the org inferenceGateway
+  NATS service (`<INFERENCE_GATEWAY_BASE_PATH>.invokeStream`), model chosen by `alias`
+  (tier such as `MAX_MODEL`), `modelId`, or `lab`+`family`. No auto-update: re-pointing a
+  tier in the gateway moves every caller. Config: `maxTokens` (4096), `temperature`,
+  `streamTimeoutSeconds` (600), `idleTimeoutSeconds` (120), `basePath` override.
+  Document blocks are not supported by the gateway and are rejected.
 - **Agent orchestrator:** `ai/agent` (the LLM↔tool loop; `maxIterations`, fixed + admin-tunable system prompt)
 - **Memory:** `memory/postgres`, `memory/dynamodb`
 - **Data tools:** `tool/opensearch`, `tool/serpapi`, `tool/quickchart`

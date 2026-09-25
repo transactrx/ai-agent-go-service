@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.8.0
+
+- **feat: `ai/inference-gateway` LLM node.** Model calls go through the org inferenceGateway
+  NATS service (`<INFERENCE_GATEWAY_BASE_PATH>.invokeStream`) and the model is selected by
+  `alias` (tier), `modelId`, or `lab`+`family`. Forwards system, messages, tools, forced tool
+  choice, maxTokens, temperature and stop sequences; streams text and tool-use events with
+  seq checking, idle (120 s) and stream (600 s) timeouts. Document blocks are rejected (the
+  gateway has no document content block). `ai/bedrock` is unchanged and still available.
+- **feat: `llm-timing` log line** from both LLM providers, one per call:
+  `llm-timing wf= node= provider= model= ttfb_ms= total_ms= in_tok= out_tok= stop= err=`.
+  `ai/bedrock` now parses token usage from `message_start` / `message_delta` for it.
+
 ## v1.7.2
 
 - **security(opensearch): aggregation allowlist.** The OpenSearch tool now validates the
