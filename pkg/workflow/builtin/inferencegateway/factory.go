@@ -127,9 +127,3 @@ func (g *gatewayLLM) Close(_ context.Context) error { return nil }
 
 // Init is a temporary stub for Task 6.
 func (g *gatewayLLM) Init(_ context.Context, _ node.NodeEnv) error { return nil }
-
-// Stream is a temporary stub for Task 7.
-func (g *gatewayLLM) Stream(_ context.Context, _ node.LLMRequest, out chan<- node.LLMEvent) error {
-	close(out)
-	return errors.New("ai/inference-gateway: not implemented")
-}
