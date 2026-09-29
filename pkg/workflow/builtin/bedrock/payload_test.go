@@ -210,3 +210,27 @@ func TestBuildPayloadAssistantToolUseAndUserToolResult(t *testing.T) {
 		t.Fatalf("payload missing tool blocks: %s", body)
 	}
 }
+
+// The agent no longer sends MaxTokens; the node default must fill max_tokens
+// so the direct payload stays byte-identical (spec 2026-09-29 §4.3).
+func TestBuildPayloadZeroMaxTokensUsesConfigDefault(t *testing.T) {
+	cfg := Config{Model: "us.anthropic.claude-opus-4-7", MaxTokens: 4096, AnthropicVersion: "bedrock-2023-05-31"}
+	req := node.LLMRequest{
+		System:   "you are helpful",
+		Messages: []node.Message{{Role: node.UserMsg, Content: []node.ContentBlock{{Type: node.BlockText, Text: "hi"}}}},
+	}
+	body, err := buildAnthropicPayload(req, cfg, testModelGen4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["max_tokens"].(float64) != 4096 {
+		t.Fatalf("max_tokens: %v, want node default 4096", got["max_tokens"])
+	}
+	if _, present := got["temperature"]; present {
+		t.Fatalf("temperature must be absent: %v", got["temperature"])
+	}
+}
