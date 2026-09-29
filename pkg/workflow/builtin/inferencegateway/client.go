@@ -33,12 +33,15 @@ func invokeSubject(override string) string {
 }
 
 // streamAck is the invokeStream reply (gateway models.InvokeStreamAck) plus
-// the NatsServiceError field a failure carries.
+// the NatsServiceError field a failure carries. AppliedParams and
+// ParamWarnings are present only when the alias carries a paramPolicy.
 type streamAck struct {
-	Accepted     bool   `json:"accepted"`
-	ModelID      string `json:"modelId"`
-	InvokeID     string `json:"invokeId"`
-	ErrorMessage string `json:"errorMessage"`
+	Accepted      bool           `json:"accepted"`
+	ModelID       string         `json:"modelId"`
+	InvokeID      string         `json:"invokeId"`
+	ErrorMessage  string         `json:"errorMessage"`
+	AppliedParams map[string]any `json:"appliedParams,omitempty"`
+	ParamWarnings []string       `json:"paramWarnings,omitempty"`
 }
 
 // parseAck applies the nats-service STATUS rule: empty or strict numeric
@@ -70,6 +73,21 @@ func errText(msg string, body []byte) string {
 		return string(body[:max]) + "..."
 	}
 	return string(body)
+}
+
+// policyLine renders the gateway-policy log line, or ok=false when the ack
+// carried no policy result (nothing to report; older gateways never do).
+// encoding/json sorts map keys, so applied= is stable for grep and tests.
+func policyLine(wf, nodeID, alias, model string, ack streamAck) (string, bool) {
+	if len(ack.AppliedParams) == 0 && len(ack.ParamWarnings) == 0 {
+		return "", false
+	}
+	applied, err := json.Marshal(ack.AppliedParams)
+	if err != nil {
+		applied = []byte(`{}`)
+	}
+	return fmt.Sprintf("gateway-policy wf=%s node=%s alias=%s model=%s applied=%s warnings=%s",
+		wf, nodeID, alias, model, applied, strings.Join(ack.ParamWarnings, "; ")), true
 }
 
 // streamUsage mirrors the gateway's models.Usage.

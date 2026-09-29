@@ -64,6 +64,9 @@ func (g *gatewayLLM) Stream(ctx context.Context, req node.LLMRequest, out chan<-
 		return fail(fmt.Errorf("ai/inference-gateway: %w", err))
 	}
 	timing.Model = ack.InvokeID
+	if line, ok := policyLine(g.wfID, g.nodeID, g.cfg.Alias, ack.InvokeID, ack); ok && g.logger != nil {
+		g.logger.Print(line)
+	}
 
 	if err := consumeStream(sctx, sub, g.idleTimeout, out, &timing); err != nil {
 		return fail(err)

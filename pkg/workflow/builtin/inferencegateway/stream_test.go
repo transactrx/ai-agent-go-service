@@ -338,3 +338,62 @@ func TestStreamRejectsDocumentBeforeRequest(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 	}
 }
+
+const policyAck = `{"accepted":true,"modelId":"anthropic.claude-opus-5-5","invokeId":"us.anthropic.claude-opus-5-5",` +
+	`"appliedParams":{"alias":"POWERLINE_CLAIM_SEARCH_MODEL","maxTokens":4096},"paramWarnings":["maxTokens set"]}`
+
+var doneEvents = []string{
+	`{"seq":0,"type":"messageStart"}`,
+	`{"seq":1,"type":"delta","contentIndex":0,"text":"ok"}`,
+	`{"seq":2,"type":"messageStop","stopReason":"end_turn"}`,
+	`{"seq":3,"type":"done"}`,
+}
+
+// A gateway alias with a paramPolicy reports what it compiled; the node logs
+// it once so a policy change is visible in the app log with no code change.
+func TestStreamLogsGatewayPolicy(t *testing.T) {
+	_, nc := runEmbeddedNATS(t)
+	fg := &fakeGateway{status: "200", ack: policyAck, events: doneEvents}
+	fg.serve(t, nc)
+	var logs bytes.Buffer
+	if _, err := collect(t, newTestLLM(nc, &logs), textReq()); err != nil {
+		t.Fatal(err)
+	}
+	line := logs.String()
+	for _, want := range []string{
+		"gateway-policy wf=wf1 node=n1 alias=MAX_MODEL model=us.anthropic.claude-opus-5-5",
+		`applied={"alias":"POWERLINE_CLAIM_SEARCH_MODEL","maxTokens":4096}`,
+		"warnings=maxTokens set",
+	} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("policy line missing %q in:\n%s", want, line)
+		}
+	}
+}
+
+// An ack without policy fields (alias without policy, or an older gateway)
+// must leave the log exactly as before.
+func TestStreamNoPolicyNoLogLine(t *testing.T) {
+	_, nc := runEmbeddedNATS(t)
+	fg := &fakeGateway{status: "200", ack: okAck, events: doneEvents}
+	fg.serve(t, nc)
+	var logs bytes.Buffer
+	if _, err := collect(t, newTestLLM(nc, &logs), textReq()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(logs.String(), "gateway-policy") {
+		t.Fatalf("no policy line expected:\n%s", logs.String())
+	}
+}
+
+func TestPolicyLineFormat(t *testing.T) {
+	ack := streamAck{AppliedParams: map[string]any{"maxTokens": float64(4096), "alias": "A1"}, ParamWarnings: []string{"maxTokens set", "topP dropped"}}
+	got, ok := policyLine("wf", "n", "A1", "us.m", ack)
+	want := `gateway-policy wf=wf node=n alias=A1 model=us.m applied={"alias":"A1","maxTokens":4096} warnings=maxTokens set; topP dropped`
+	if !ok || got != want {
+		t.Fatalf("got %q\nwant %q", got, want)
+	}
+	if _, ok := policyLine("wf", "n", "A1", "us.m", streamAck{}); ok {
+		t.Fatal("empty ack must produce no line")
+	}
+}
