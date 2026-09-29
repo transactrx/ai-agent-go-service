@@ -51,19 +51,13 @@ type wireTool struct {
 	InputSchema json.RawMessage `json:"inputSchema"`
 }
 
-// invokeStreamRequest is the body sent to <base>.invokeStream.
+// invokeStreamRequest is the body sent to <base>.invokeStream. It carries no
+// inference parameter on purpose: the gateway alias paramPolicy owns them.
 type invokeStreamRequest struct {
-	Alias   string `json:"alias,omitempty"`
-	Lab     string `json:"lab,omitempty"`
-	Family  string `json:"family,omitempty"`
-	ModelID string `json:"modelId,omitempty"`
+	Alias string `json:"alias"`
 
 	System   string        `json:"system,omitempty"`
 	Messages []wireMessage `json:"messages"`
-
-	MaxTokens     *int32   `json:"maxTokens,omitempty"`
-	Temperature   *float32 `json:"temperature,omitempty"`
-	StopSequences []string `json:"stopSequences,omitempty"`
 
 	Tools          []wireTool `json:"tools,omitempty"`
 	ToolChoice     string     `json:"toolChoice,omitempty"`
@@ -87,26 +81,15 @@ func imageFormat(mediaType string) (string, error) {
 	return "", fmt.Errorf("ai/inference-gateway: unsupported image media type %q", mediaType)
 }
 
-// buildRequest converts the provider-agnostic request into the gateway body.
-// Every parameter the agent sends today is forwarded (spec §3.2); only the
-// stream subject is left for Stream to fill.
+// buildRequest converts the provider-agnostic request into the gateway body:
+// alias, system, messages, tools and forced tool choice. MaxTokens,
+// Temperature and Stop on req are ignored here — the gateway alias
+// paramPolicy decides them (spec 2026-09-29 §4.2). Only the stream subject
+// is left for Stream to fill.
 func buildRequest(req node.LLMRequest, cfg Config) (*invokeStreamRequest, error) {
 	out := &invokeStreamRequest{
-		Alias:         cfg.Alias,
-		System:        req.System,
-		StopSequences: req.Stop,
-	}
-	maxTok := 0
-	if req.MaxTokens > 0 {
-		maxTok = req.MaxTokens
-	}
-	if maxTok > 0 {
-		v := int32(maxTok)
-		out.MaxTokens = &v
-	}
-	if req.Temperature != nil {
-		v := float32(*req.Temperature)
-		out.Temperature = &v
+		Alias:  cfg.Alias,
+		System: req.System,
 	}
 	for _, m := range req.Messages {
 		wm := wireMessage{Role: string(m.Role), Content: make([]wireBlock, 0, len(m.Content))}

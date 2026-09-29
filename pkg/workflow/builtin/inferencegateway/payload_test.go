@@ -31,17 +31,16 @@ func TestBuildRequestFullShape(t *testing.T) {
 			}},
 		},
 	}
-	got, err := buildRequest(req, Config{Alias: "A1"})
+	got, err := buildRequest(req, Config{Alias: "MAX_MODEL"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	b, _ := json.Marshal(got)
-	want := `{"alias":"A1","system":"sys","messages":[` +
+	want := `{"alias":"MAX_MODEL","system":"sys","messages":[` +
 		`{"role":"user","content":[{"text":"hello"},{"image":{"format":"png","base64":"AQID"}}]},` +
 		`{"role":"assistant","content":[{"toolUse":{"toolUseId":"tu1","name":"search","input":{}}}]},` +
 		`{"role":"user","content":[{"toolResult":{"toolUseId":"tu1","content":[{"text":"{\"hits\":3}"}],"status":"error"}},` +
 		`{"toolResult":{"toolUseId":"tu2","content":[{"text":"\"\""}]}}]}],` +
-		`"maxTokens":512,"temperature":0.2,"stopSequences":["END"],` +
 		`"tools":[{"name":"search","description":"d","inputSchema":{"type":"object"}}],` +
 		`"toolChoice":"tool","toolChoiceName":"search","streamSubject":""}`
 	if string(b) != want {
@@ -49,13 +48,53 @@ func TestBuildRequestFullShape(t *testing.T) {
 	}
 }
 
-// temperature converted: workflow JSON float64 → gateway float32.
-func TestBuildRequestTemperatureConverted(t *testing.T) {
-	temp := 0.7
-	min := node.LLMRequest{Temperature: &temp, Messages: []node.Message{{Role: node.UserMsg, Content: []node.ContentBlock{{Type: node.BlockText, Text: "x"}}}}}
-	got, _ := buildRequest(min, Config{Alias: "A1"})
-	if got.Temperature == nil || *got.Temperature != float32(0.7) {
-		t.Fatalf("temperature = %v", got.Temperature)
+// The gateway alias paramPolicy owns every knob: whatever the LLMRequest
+// carries, the body never names a model parameter.
+func TestBuildRequestNeverSendsKnobs(t *testing.T) {
+	temp := 0.2
+	req := node.LLMRequest{
+		MaxTokens:   512,
+		Temperature: &temp,
+		Stop:        []string{"END"},
+		Messages:    []node.Message{{Role: node.UserMsg, Content: []node.ContentBlock{{Type: node.BlockText, Text: "x"}}}},
+	}
+	got, err := buildRequest(req, Config{Alias: "POWERLINE_CLAIM_SEARCH_MODEL"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(got)
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(b, &keys); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"maxTokens", "temperature", "stopSequences", "modelId", "lab", "family"} {
+		if _, present := keys[k]; present {
+			t.Fatalf("body must not carry %q: %s", k, b)
+		}
+	}
+	for _, k := range []string{"alias", "messages", "streamSubject"} {
+		if _, present := keys[k]; !present {
+			t.Fatalf("body must carry %q: %s", k, b)
+		}
+	}
+	if got.Alias != "POWERLINE_CLAIM_SEARCH_MODEL" || got.ToolChoice != "" || got.Tools != nil {
+		t.Fatalf("body = %+v", got)
+	}
+}
+
+// Forced tool choice is per-call intent, not a model parameter: still forwarded.
+func TestBuildRequestForwardsToolChoice(t *testing.T) {
+	req := node.LLMRequest{
+		Tools:          []node.ToolSpec{{Name: "echo", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+		ToolChoiceName: "echo",
+		Messages:       []node.Message{{Role: node.UserMsg, Content: []node.ContentBlock{{Type: node.BlockText, Text: "x"}}}},
+	}
+	got, err := buildRequest(req, Config{Alias: "A1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ToolChoice != "tool" || got.ToolChoiceName != "echo" || len(got.Tools) != 1 {
+		t.Fatalf("tool choice = %+v", got)
 	}
 }
 
