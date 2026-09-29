@@ -58,6 +58,13 @@ For `ai/inference-gateway`, `model=` is the invoke id from the gateway's ack; if
 capacity fallback re-routes the request before any token was streamed, the line still shows the
 acked id (gateway contract limitation).
 
+### `gateway-policy` log line
+
+When the gateway alias an `ai/inference-gateway` node calls carries a `paramPolicy`, every call
+also logs `gateway-policy wf=<id> node=<id> alias=<name> model=<invokeId> applied=<json> warnings=<w1; w2>`:
+`applied` is the compiled request's top-level parameters (what the model actually received),
+`warnings` every change the policy made (e.g. `maxTokens set`). Absent when no policy ran.
+
 ### `ai/bedrock` auto-update notification events
 
 Notification subject: `MODEL_AUTOUPDATE_NOTIFY_SUBJECT` (or `<NATS_BASE_PATH>.modelAutoUpdate`).

@@ -2,12 +2,17 @@
 
 ## v1.8.0
 
-- **feat: `ai/inference-gateway` LLM node.** Model calls go through the org inferenceGateway
-  NATS service (`<INFERENCE_GATEWAY_BASE_PATH>.invokeStream`) and the model is selected by
-  `alias` (tier), `modelId`, or `lab`+`family`. Forwards system, messages, tools, forced tool
-  choice, maxTokens, temperature and stop sequences; streams text and tool-use events with
-  seq checking, idle (120 s) and stream (600 s) timeouts. Document blocks are rejected (the
-  gateway has no document content block). `ai/bedrock` is unchanged and still available.
+- **feat: `ai/inference-gateway` LLM node (alias-only).** Model calls go through the org
+  inferenceGateway NATS service (`<INFERENCE_GATEWAY_BASE_PATH>.invokeStream`). The node config
+  is `alias` (a gateway tier) plus timeouts/basePath; the gateway alias row resolves the model
+  and its `paramPolicy` owns every inference parameter. The body carries `alias`, `system`,
+  `messages`, `tools` and forced tool choice only — never `maxTokens`, `temperature` or stop
+  sequences. Unknown config keys fail the workflow at load. A `gateway-policy` log line reports
+  the ack's `appliedParams`/`paramWarnings` when a policy ran. Streams text and tool-use events
+  with seq checking, idle (120 s) and stream (600 s) timeouts. Document blocks are rejected.
+- **refactor(agent): no hardcoded `maxTokens`.** The agent loop no longer sets `MaxTokens: 4096`;
+  each provider decides. `ai/bedrock` payload is unchanged (its node default is 4096).
+  `ai/bedrock` is otherwise untouched and still available.
 - **feat: `llm-timing` log line** from both LLM providers, one per call:
   `llm-timing wf= node= provider= model= ttfb_ms= total_ms= in_tok= out_tok= stop= err=`.
   `ai/bedrock` now parses token usage from `message_start` / `message_delta` for it.
