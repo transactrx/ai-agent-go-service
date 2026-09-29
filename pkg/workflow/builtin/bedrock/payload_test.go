@@ -214,7 +214,13 @@ func TestBuildPayloadAssistantToolUseAndUserToolResult(t *testing.T) {
 // The agent no longer sends MaxTokens; the node default must fill max_tokens
 // so the direct payload stays byte-identical (spec 2026-09-29 §4.3).
 func TestBuildPayloadZeroMaxTokensUsesConfigDefault(t *testing.T) {
-	cfg := Config{Model: "us.anthropic.claude-opus-4-7", MaxTokens: 4096, AnthropicVersion: "bedrock-2023-05-31"}
+	// Built through the Factory so the defaultMaxTokens fill is pinned
+	// (Factory.New is pure config parsing; AWS clients open in Init).
+	n, err := Factory.New([]byte(`{"model":"us.anthropic.claude-opus-4-7","autoUpdate":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := n.(*bedrockLLM).cfg
 	req := node.LLMRequest{
 		System:   "you are helpful",
 		Messages: []node.Message{{Role: node.UserMsg, Content: []node.ContentBlock{{Type: node.BlockText, Text: "hi"}}}},

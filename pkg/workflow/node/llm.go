@@ -21,6 +21,7 @@ type LLMRequest struct {
 	// MaxTokens, Temperature and Stop are honoured by ai/bedrock only.
 	// ai/inference-gateway never forwards them: the gateway alias paramPolicy
 	// owns every inference parameter, so a model change is an alias edit.
+	// The agent sends MaxTokens == 0; a provider must apply its own default.
 	MaxTokens   int
 	Temperature *float64
 	Stop        []string

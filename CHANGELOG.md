@@ -11,8 +11,11 @@
   the ack's `appliedParams`/`paramWarnings` when a policy ran. Streams text and tool-use events
   with seq checking, idle (120 s) and stream (600 s) timeouts. Document blocks are rejected.
 - **refactor(agent): no hardcoded `maxTokens`.** The agent loop no longer sets `MaxTokens: 4096`;
-  each provider decides. `ai/bedrock` payload is unchanged (its node default is 4096).
-  `ai/bedrock` is otherwise untouched and still available.
+  each provider decides. `ai/bedrock` payload is unchanged when its node `maxTokens` is unset or
+  4096 (the default); a bedrock node with any other configured `maxTokens` now has it honoured (it
+  was previously overridden by the agent's 4096). Custom `LLMProvider` implementations must apply
+  their own default, since the agent now sends `MaxTokens == 0`. `ai/bedrock` is otherwise
+  untouched and still available.
 - **feat: `llm-timing` log line** from both LLM providers, one per call:
   `llm-timing wf= node= provider= model= ttfb_ms= total_ms= in_tok= out_tok= stop= err=`.
   `ai/bedrock` now parses token usage from `message_start` / `message_delta` for it.

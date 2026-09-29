@@ -111,14 +111,16 @@ engine internals — all coupling goes through the `NodeEnv` passed to `Init` (l
 
 - **Trigger:** `trigger/nats-chat` — caller-facing contract of the endpoints it registers
   (request shape, single vs streaming consumption): [CHAT-ENDPOINTS.md](CHAT-ENDPOINTS.md)
-- **LLM:** `ai/bedrock` (Claude via AWS Bedrock, optional daily model auto-update)
+- **LLM:** `ai/bedrock` (Claude via AWS Bedrock, optional daily model auto-update). Since v1.8.0
+  the agent sends no `maxTokens`; `ai/bedrock` uses its node `maxTokens` (default 4096).
 - **LLM (gateway):** `ai/inference-gateway` — model calls through the org inferenceGateway
   NATS service (`<INFERENCE_GATEWAY_BASE_PATH>.invokeStream`). Config: `alias` (required,
   a gateway tier such as `POWERLINE_CLAIM_SEARCH_MODEL`, `^[A-Z][A-Z0-9_]{1,63}$`), `streamTimeoutSeconds`
   (600), `idleTimeoutSeconds` (120), `basePath` override. Nothing else: the gateway alias row
   resolves the model and its `paramPolicy` owns every inference parameter (`maxTokens`,
   `temperature`, …), so a model change is an alias edit, never a deploy. Any other config key
-  (`maxTokens`, `modelId`, `lab`, …) fails the workflow at load. The body sent is `alias`,
+  (`maxTokens`, `modelId`, `lab`, …) fails the workflow at load: the engine skips that workflow and keeps starting, logging
+  `engine: loaded N of M workflows (succeeded: [...]; failed: [...])`. The body sent is `alias`,
   `system`, `messages`, `tools` and a forced `toolChoice` when the request carries one. When the
   alias has a policy the node logs one `gateway-policy` line per call (see DEPLOYMENT.md).
   Document blocks are not supported by the gateway and are rejected.

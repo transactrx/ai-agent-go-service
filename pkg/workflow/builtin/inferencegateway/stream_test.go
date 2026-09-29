@@ -44,11 +44,13 @@ type fakeGateway struct {
 	events []string // raw JSON, published in order after the ack
 	delay  time.Duration
 	seen   chan invokeStreamRequest
+	raw    chan []byte // exact wire body, to catch keys the typed struct would drop
 }
 
 func (f *fakeGateway) serve(t *testing.T, nc *nats.Conn) {
 	t.Helper()
 	f.seen = make(chan invokeStreamRequest, 1)
+	f.raw = make(chan []byte, 1)
 	_, err := nc.Subscribe(testSubject, func(m *nats.Msg) {
 		var req invokeStreamRequest
 		if err := json.Unmarshal(m.Data, &req); err != nil {
@@ -56,6 +58,7 @@ func (f *fakeGateway) serve(t *testing.T, nc *nats.Conn) {
 			return
 		}
 		f.seen <- req
+		f.raw <- append([]byte(nil), m.Data...)
 		reply := &nats.Msg{Subject: m.Reply, Data: []byte(f.ack), Header: nats.Header{}}
 		if f.status != "" {
 			reply.Header.Set(nats_service_common.STATUS, f.status)
@@ -119,11 +122,21 @@ func TestStreamTextHappyPath(t *testing.T) {
 	}}
 	fg.serve(t, nc)
 	var logs bytes.Buffer
-	evs, err := collect(t, newTestLLM(nc, &logs), textReq())
+	temp := 0.7
+	req := textReq()
+	req.MaxTokens = 64
+	req.Temperature = &temp
+	evs, err := collect(t, newTestLLM(nc, &logs), req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	seen := <-fg.seen
+	raw := <-fg.raw
+	for _, k := range []string{`"maxTokens"`, `"temperature"`, `"stopSequences"`, `"modelId"`} {
+		if bytes.Contains(raw, []byte(k)) {
+			t.Fatalf("wire body must not contain %s: %s", k, raw)
+		}
+	}
 	if seen.Alias != "MAX_MODEL" || seen.StreamSubject == "" {
 		t.Fatalf("request = %+v", seen)
 	}
