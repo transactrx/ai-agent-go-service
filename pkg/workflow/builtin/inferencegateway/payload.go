@@ -93,13 +93,10 @@ func imageFormat(mediaType string) (string, error) {
 func buildRequest(req node.LLMRequest, cfg Config) (*invokeStreamRequest, error) {
 	out := &invokeStreamRequest{
 		Alias:         cfg.Alias,
-		Lab:           cfg.Lab,
-		Family:        cfg.Family,
-		ModelID:       cfg.ModelID,
 		System:        req.System,
 		StopSequences: req.Stop,
 	}
-	maxTok := cfg.MaxTokens
+	maxTok := 0
 	if req.MaxTokens > 0 {
 		maxTok = req.MaxTokens
 	}

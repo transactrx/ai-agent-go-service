@@ -75,7 +75,7 @@ func (f *fakeGateway) serve(t *testing.T, nc *nats.Conn) {
 }
 
 func newTestLLM(nc *nats.Conn, logs *bytes.Buffer) *gatewayLLM {
-	g := newLLM(Config{Alias: "MAX_MODEL", MaxTokens: 64, StreamTimeoutSeconds: 5, IdleTimeoutSeconds: 1})
+	g := newLLM(Config{Alias: "MAX_MODEL", StreamTimeoutSeconds: 5, IdleTimeoutSeconds: 1})
 	g.nc = nc
 	g.subject = testSubject
 	g.wfID, g.nodeID = "wf1", "n1"
@@ -124,7 +124,7 @@ func TestStreamTextHappyPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	seen := <-fg.seen
-	if seen.Alias != "MAX_MODEL" || seen.StreamSubject == "" || seen.MaxTokens == nil || *seen.MaxTokens != 64 {
+	if seen.Alias != "MAX_MODEL" || seen.StreamSubject == "" {
 		t.Fatalf("request = %+v", seen)
 	}
 	var text string

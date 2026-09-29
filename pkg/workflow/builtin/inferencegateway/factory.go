@@ -1,15 +1,19 @@
 // Package inferencegateway implements the ai/inference-gateway LLMProvider:
 // model calls go through the org inferenceGateway NATS service
-// (<base>.invokeStream) and the model is chosen by alias (tier), model id, or
-// lab+family. Spec: docs/superpowers/specs/2026-09-25-inference-gateway-llm-design.md
+// (<base>.invokeStream). The node names an alias (tier) only; the gateway
+// alias row resolves the model and, through its paramPolicy, owns every
+// inference parameter. Specs: docs/superpowers/specs/2026-09-25-inference-gateway-llm-design.md,
+// docs/superpowers/specs/2026-09-29-alias-only-param-policy-design.md
 package inferencegateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -20,21 +24,20 @@ import (
 
 const (
 	nodeType             = "ai/inference-gateway"
-	defaultMaxTokens     = 4096
 	defaultStreamTimeout = 600 * time.Second
 	defaultIdleTimeout   = 120 * time.Second
 )
 
-// Config is the per-instance node config. Exactly one selector: alias,
-// modelId, or lab+family. The gateway resolves it on every call.
-type Config struct {
-	Alias   string `json:"alias,omitempty"`
-	ModelID string `json:"modelId,omitempty"`
-	Lab     string `json:"lab,omitempty"`
-	Family  string `json:"family,omitempty"`
+// aliasName is the gateway's alias rule (inferenceGateway README): a tier can
+// never be mistaken for a model id, so a model id in this field fails at load.
+var aliasName = regexp.MustCompile(`^[A-Z][A-Z0-9_]{1,63}$`)
 
-	MaxTokens   int      `json:"maxTokens,omitempty"`
-	Temperature *float64 `json:"temperature,omitempty"`
+// Config is the per-instance node config. Only the alias selects the model;
+// model id, family and every inference parameter (maxTokens, temperature, …)
+// live in the gateway alias row and its paramPolicy. Unknown keys are
+// rejected so a stale workflow JSON fails at load instead of being ignored.
+type Config struct {
+	Alias string `json:"alias"`
 
 	StreamTimeoutSeconds int `json:"streamTimeoutSeconds,omitempty"`
 	IdleTimeoutSeconds   int `json:"idleTimeoutSeconds,omitempty"`
@@ -44,24 +47,11 @@ type Config struct {
 }
 
 func (c Config) validate() error {
-	if (c.Lab == "") != (c.Family == "") {
-		return errors.New("ai/inference-gateway: lab and family must be set together")
+	if c.Alias == "" {
+		return errors.New("ai/inference-gateway: alias is required")
 	}
-	selectors := 0
-	if c.Alias != "" {
-		selectors++
-	}
-	if c.ModelID != "" {
-		selectors++
-	}
-	if c.Lab != "" {
-		selectors++
-	}
-	if selectors != 1 {
-		return errors.New("ai/inference-gateway: exactly one of alias, modelId, lab+family is required")
-	}
-	if c.MaxTokens < 0 {
-		return errors.New("ai/inference-gateway: maxTokens must not be negative")
+	if !aliasName.MatchString(c.Alias) {
+		return fmt.Errorf("ai/inference-gateway: alias must match %s, got %q", aliasName, c.Alias)
 	}
 	if c.StreamTimeoutSeconds < 0 || c.IdleTimeoutSeconds < 0 {
 		return errors.New("ai/inference-gateway: timeouts must be positive")
@@ -72,7 +62,9 @@ func (c Config) validate() error {
 // Factory builds an ai/inference-gateway node from rawConfig.
 var Factory node.Factory = node.FactoryFunc(func(rawConfig json.RawMessage) (node.Node, error) {
 	var cfg Config
-	if err := json.Unmarshal(rawConfig, &cfg); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(rawConfig))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("ai/inference-gateway: parse config: %w", err)
 	}
 	if err := cfg.validate(); err != nil {
@@ -95,11 +87,8 @@ type gatewayLLM struct {
 	wfID   string
 }
 
-// newLLM applies config defaults.
+// newLLM applies transport defaults.
 func newLLM(cfg Config) *gatewayLLM {
-	if cfg.MaxTokens == 0 {
-		cfg.MaxTokens = defaultMaxTokens
-	}
 	g := &gatewayLLM{cfg: cfg, streamTimeout: defaultStreamTimeout, idleTimeout: defaultIdleTimeout}
 	if cfg.StreamTimeoutSeconds > 0 {
 		g.streamTimeout = time.Duration(cfg.StreamTimeoutSeconds) * time.Second
@@ -157,7 +146,7 @@ func (g *gatewayLLM) Init(_ context.Context, env node.NodeEnv) error {
 		return errors.New("ai/inference-gateway: nats host not registered or not connected")
 	}
 	g.subject = invokeSubject(g.cfg.BasePath)
-	g.logger.Printf("ai/inference-gateway wf=%s node=%s ready (alias=%q modelId=%q lab=%q family=%q subject=%s)",
-		g.wfID, g.nodeID, g.cfg.Alias, g.cfg.ModelID, g.cfg.Lab, g.cfg.Family, g.subject)
+	g.logger.Printf("ai/inference-gateway wf=%s node=%s ready (alias=%q subject=%s)",
+		g.wfID, g.nodeID, g.cfg.Alias, g.subject)
 	return nil
 }

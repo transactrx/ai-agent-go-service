@@ -31,12 +31,12 @@ func TestBuildRequestFullShape(t *testing.T) {
 			}},
 		},
 	}
-	got, err := buildRequest(req, Config{Alias: "MAX_MODEL", MaxTokens: 4096})
+	got, err := buildRequest(req, Config{Alias: "A1"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	b, _ := json.Marshal(got)
-	want := `{"alias":"MAX_MODEL","system":"sys","messages":[` +
+	want := `{"alias":"A1","system":"sys","messages":[` +
 		`{"role":"user","content":[{"text":"hello"},{"image":{"format":"png","base64":"AQID"}}]},` +
 		`{"role":"assistant","content":[{"toolUse":{"toolUseId":"tu1","name":"search","input":{}}}]},` +
 		`{"role":"user","content":[{"toolResult":{"toolUseId":"tu1","content":[{"text":"{\"hits\":3}"}],"status":"error"}},` +
@@ -49,32 +49,11 @@ func TestBuildRequestFullShape(t *testing.T) {
 	}
 }
 
-func TestBuildRequestSelectorsAndDefaults(t *testing.T) {
-	min := node.LLMRequest{Messages: []node.Message{{Role: node.UserMsg, Content: []node.ContentBlock{{Type: node.BlockText, Text: "x"}}}}}
-	got, err := buildRequest(min, Config{Lab: "anthropic", Family: "claude-opus", MaxTokens: 4096})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Lab != "anthropic" || got.Family != "claude-opus" || got.Alias != "" || got.ModelID != "" {
-		t.Fatalf("selectors = %+v", got)
-	}
-	if got.MaxTokens == nil || *got.MaxTokens != 4096 {
-		t.Fatalf("config maxTokens must apply when request has none: %v", got.MaxTokens)
-	}
-	if got.Temperature != nil || got.ToolChoice != "" || got.Tools != nil {
-		t.Fatalf("optional fields must be omitted: %+v", got)
-	}
-	got, _ = buildRequest(min, Config{ModelID: "us.x", MaxTokens: 4096})
-	if got.ModelID != "us.x" {
-		t.Fatalf("modelId selector: %+v", got)
-	}
-}
-
 // temperature converted: workflow JSON float64 → gateway float32.
 func TestBuildRequestTemperatureConverted(t *testing.T) {
 	temp := 0.7
 	min := node.LLMRequest{Temperature: &temp, Messages: []node.Message{{Role: node.UserMsg, Content: []node.ContentBlock{{Type: node.BlockText, Text: "x"}}}}}
-	got, _ := buildRequest(min, Config{Alias: "A", MaxTokens: 1})
+	got, _ := buildRequest(min, Config{Alias: "A1"})
 	if got.Temperature == nil || *got.Temperature != float32(0.7) {
 		t.Fatalf("temperature = %v", got.Temperature)
 	}
@@ -82,15 +61,15 @@ func TestBuildRequestTemperatureConverted(t *testing.T) {
 
 func TestBuildRequestRejectsUnsupported(t *testing.T) {
 	doc := node.LLMRequest{Messages: []node.Message{{Role: node.UserMsg, Content: []node.ContentBlock{{Type: node.BlockDocument, MediaType: "application/pdf", Data: []byte("x")}}}}}
-	if _, err := buildRequest(doc, Config{Alias: "A"}); err == nil || !strings.Contains(err.Error(), "document blocks are not supported") {
+	if _, err := buildRequest(doc, Config{Alias: "A1"}); err == nil || !strings.Contains(err.Error(), "document blocks are not supported") {
 		t.Fatalf("document: err = %v", err)
 	}
 	bmp := node.LLMRequest{Messages: []node.Message{{Role: node.UserMsg, Content: []node.ContentBlock{{Type: node.BlockImage, MediaType: "image/bmp", Data: []byte("x")}}}}}
-	if _, err := buildRequest(bmp, Config{Alias: "A"}); err == nil || !strings.Contains(err.Error(), "image/bmp") {
+	if _, err := buildRequest(bmp, Config{Alias: "A1"}); err == nil || !strings.Contains(err.Error(), "image/bmp") {
 		t.Fatalf("bmp: err = %v", err)
 	}
 	unknown := node.LLMRequest{Messages: []node.Message{{Role: node.UserMsg, Content: []node.ContentBlock{{Type: "weird"}}}}}
-	if _, err := buildRequest(unknown, Config{Alias: "A"}); err == nil || !strings.Contains(err.Error(), "unknown block type") {
+	if _, err := buildRequest(unknown, Config{Alias: "A1"}); err == nil || !strings.Contains(err.Error(), "unknown block type") {
 		t.Fatalf("unknown: err = %v", err)
 	}
 }

@@ -13,15 +13,15 @@ func TestFactoryConfigValidation(t *testing.T) {
 	cases := []struct {
 		name, raw, wantErr string
 	}{
-		{"alias ok", `{"alias":"MAX_MODEL"}`, ""},
-		{"modelId ok", `{"modelId":"us.anthropic.claude-opus-5-5"}`, ""},
-		{"lab+family ok", `{"lab":"anthropic","family":"claude-opus"}`, ""},
-		{"none", `{}`, "exactly one of alias, modelId, lab+family"},
-		{"two selectors", `{"alias":"A","modelId":"m"}`, "exactly one of alias, modelId, lab+family"},
-		{"lab without family", `{"lab":"anthropic"}`, "lab and family must be set together"},
-		{"family without lab", `{"family":"claude-opus"}`, "lab and family must be set together"},
+		{"alias ok", `{"alias":"POWERLINE_CLAIM_SEARCH_MODEL"}`, ""},
+		{"alias with timeouts and basePath", `{"alias":"A1","streamTimeoutSeconds":5,"idleTimeoutSeconds":2,"basePath":"trx.x"}`, ""},
+		{"none", `{}`, "alias is required"},
+		{"empty alias", `{"alias":""}`, "alias is required"},
+		{"model id in alias", `{"alias":"us.anthropic.claude-opus-5-5"}`, "alias must match"},
+		{"lowercase alias", `{"alias":"powerline"}`, "alias must match"},
+		{"one char alias", `{"alias":"A"}`, "alias must match"},
 		{"bad json", `{"alias":1}`, "parse config"},
-		{"negative maxTokens", `{"alias":"A","maxTokens":-1}`, "maxTokens must not be negative"},
+		{"negative timeout", `{"alias":"A1","idleTimeoutSeconds":-1}`, "timeouts must be positive"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -45,13 +45,25 @@ func TestFactoryConfigValidation(t *testing.T) {
 	}
 }
 
-func TestNewLLMDefaults(t *testing.T) {
-	g := newLLM(Config{Alias: "A"})
-	if g.cfg.MaxTokens != 4096 || g.streamTimeout != 600*time.Second || g.idleTimeout != 120*time.Second {
-		t.Fatalf("defaults = maxTokens %d stream %s idle %s", g.cfg.MaxTokens, g.streamTimeout, g.idleTimeout)
+// Every knob and selector the gateway alias now owns must be refused at load,
+// so a stale workflow JSON (or an inherited base key) fails loudly.
+func TestFactoryRejectsUnknownFields(t *testing.T) {
+	for _, key := range []string{"maxTokens", "temperature", "modelId", "lab", "family", "model", "region", "autoUpdate"} {
+		raw := `{"alias":"A1","` + key + `":1}`
+		_, err := Factory.New(json.RawMessage(raw))
+		if err == nil || !strings.Contains(err.Error(), `unknown field "`+key+`"`) {
+			t.Fatalf("%s: err = %v, want unknown field", key, err)
+		}
 	}
-	g = newLLM(Config{Alias: "A", MaxTokens: 10, StreamTimeoutSeconds: 5, IdleTimeoutSeconds: 2})
-	if g.cfg.MaxTokens != 10 || g.streamTimeout != 5*time.Second || g.idleTimeout != 2*time.Second {
+}
+
+func TestNewLLMDefaults(t *testing.T) {
+	g := newLLM(Config{Alias: "A1"})
+	if g.streamTimeout != 600*time.Second || g.idleTimeout != 120*time.Second {
+		t.Fatalf("defaults = stream %s idle %s", g.streamTimeout, g.idleTimeout)
+	}
+	g = newLLM(Config{Alias: "A1", StreamTimeoutSeconds: 5, IdleTimeoutSeconds: 2})
+	if g.streamTimeout != 5*time.Second || g.idleTimeout != 2*time.Second {
 		t.Fatalf("overrides not applied: %+v", g)
 	}
 }
