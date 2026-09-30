@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
@@ -15,13 +16,31 @@ import (
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/node"
 )
 
+// anthropicStats collects what the timing line needs from the Bedrock
+// Anthropic chunk stream: usage (message_start input, message_delta output)
+// and the final stop reason.
+type anthropicStats struct {
+	hasUsage     bool
+	inputTokens  int
+	outputTokens int
+	stop         string
+}
+
 // Stream invokes Bedrock with response streaming and translates Anthropic
 // chunks to node.LLMEvent values on out. Closes out before returning.
 func (b *bedrockLLM) Stream(ctx context.Context, req node.LLMRequest, out chan<- node.LLMEvent) error {
 	defer close(out)
 	model := b.currentModel()
+	timing := node.LLMTiming{Provider: "ai/bedrock", Model: model, Start: time.Now()}
+	stats := &anthropicStats{}
+	defer func() {
+		timing.End = time.Now()
+		timing.HasUsage, timing.InputTokens, timing.OutputTokens = stats.hasUsage, stats.inputTokens, stats.outputTokens
+		timing.Stop = stats.stop
+		node.LogLLMTiming(b.logger, b.wfID, b.nodeID, timing)
+	}()
 
-	// The envelope is model-aware (5-generation models need thinking:disabled),
+	// The envelope is model-aware (Claude 5.0–5.4 need thinking:disabled),
 	// and the last-known-good retry can cross a generation boundary, so the
 	// payload is built per attempt from that attempt's model ID.
 	makeInput := func(m string) (*bedrockruntime.InvokeModelWithResponseStreamInput, error) {
@@ -38,6 +57,7 @@ func (b *bedrockLLM) Stream(ctx context.Context, req node.LLMRequest, out chan<-
 	}
 	in, err := makeInput(model)
 	if err != nil {
+		timing.Err = err
 		return err
 	}
 	resp, err := b.client.InvokeModelWithResponseStream(ctx, in)
@@ -59,11 +79,13 @@ func (b *bedrockLLM) Stream(ctx context.Context, req node.LLMRequest, out chan<-
 				}
 			} else {
 				model = lkg
+				timing.Model = model
 				resp, err = b.client.InvokeModelWithResponseStream(ctx, lkgIn)
 			}
 		}
 	}
 	if err != nil {
+		timing.Err = err
 		if b.logger != nil {
 			b.logger.Printf("ai/bedrock invoke failed: wf=%s node=%s model=%s region=%s err=%v", b.wfID, b.nodeID, model, b.cfg.Region, err)
 		}
@@ -79,11 +101,16 @@ func (b *bedrockLLM) Stream(ctx context.Context, req node.LLMRequest, out chan<-
 
 	for evt := range stream.Events() {
 		if ctx.Err() != nil {
+			timing.Err = ctx.Err()
 			return ctx.Err()
+		}
+		if timing.FirstEvent.IsZero() {
+			timing.FirstEvent = time.Now()
 		}
 		switch e := evt.(type) {
 		case *types.ResponseStreamMemberChunk:
-			if err := handleAnthropicChunk(ctx, e.Value.Bytes, accum, out); err != nil {
+			if err := handleAnthropicChunkStats(ctx, e.Value.Bytes, accum, out, stats); err != nil {
+				timing.Err = err
 				if b.logger != nil {
 					b.logger.Printf("ai/bedrock chunk decode failed: wf=%s node=%s model=%s err=%v", b.wfID, b.nodeID, model, err)
 				}
@@ -91,14 +118,17 @@ func (b *bedrockLLM) Stream(ctx context.Context, req node.LLMRequest, out chan<-
 				return err
 			}
 		default:
+			err := fmt.Errorf("bedrock stream: %T", e)
+			timing.Err = err
 			if b.logger != nil {
 				b.logger.Printf("ai/bedrock unexpected stream event: wf=%s node=%s model=%s type=%T", b.wfID, b.nodeID, model, e)
 			}
 			emit(ctx, out, node.LLMEvent{Kind: node.LLMError, Error: fmt.Errorf("ai/bedrock: stream error: %T", e)})
-			return fmt.Errorf("bedrock stream: %T", e)
+			return err
 		}
 	}
 	if err := stream.Err(); err != nil {
+		timing.Err = err
 		if b.logger != nil {
 			b.logger.Printf("ai/bedrock stream terminated with error: wf=%s node=%s model=%s err=%v", b.wfID, b.nodeID, model, err)
 		}
@@ -108,9 +138,16 @@ func (b *bedrockLLM) Stream(ctx context.Context, req node.LLMRequest, out chan<-
 	return nil
 }
 
-// handleAnthropicChunk parses one streamed JSON event from Bedrock's Anthropic
-// adapter and emits the corresponding LLMEvent(s).
+// handleAnthropicChunk keeps the original signature for callers that do not
+// need stats (auto-update probe, tests).
 func handleAnthropicChunk(ctx context.Context, raw []byte, accum map[int]*node.LLMToolUse, out chan<- node.LLMEvent) error {
+	return handleAnthropicChunkStats(ctx, raw, accum, out, nil)
+}
+
+// handleAnthropicChunkStats parses one streamed JSON event from Bedrock's
+// Anthropic adapter, emits the corresponding LLMEvent(s), and (when st is
+// non-nil) accumulates usage/stop stats for the llm-timing line.
+func handleAnthropicChunkStats(ctx context.Context, raw []byte, accum map[int]*node.LLMToolUse, out chan<- node.LLMEvent, st *anthropicStats) error {
 	type delta struct {
 		Type        string `json:"type"`
 		Text        string `json:"text"`
@@ -131,6 +168,9 @@ func handleAnthropicChunk(ctx context.Context, raw []byte, accum map[int]*node.L
 		Delta struct {
 			StopReason string `json:"stop_reason"`
 		} `json:"delta"`
+		Usage struct {
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
 	}
 
 	dec := json.NewDecoder(bytes.NewReader(raw))
@@ -142,6 +182,19 @@ func handleAnthropicChunk(ctx context.Context, raw []byte, accum map[int]*node.L
 	_ = json.Unmarshal(head["type"], &t)
 
 	switch t {
+	case "message_start":
+		if st != nil {
+			var v struct {
+				Message struct {
+					Usage struct {
+						InputTokens int `json:"input_tokens"`
+					} `json:"usage"`
+				} `json:"message"`
+			}
+			_ = json.Unmarshal(raw, &v)
+			st.hasUsage = true
+			st.inputTokens = v.Message.Usage.InputTokens
+		}
 	case "content_block_start":
 		var v contentBlockStart
 		if err := json.Unmarshal(raw, &v); err != nil {
@@ -188,6 +241,15 @@ func handleAnthropicChunk(ctx context.Context, raw []byte, accum map[int]*node.L
 		}
 		if v.Delta.StopReason != "" {
 			emit(ctx, out, node.LLMEvent{Kind: node.LLMMessageStop, Stop: v.Delta.StopReason})
+		}
+		if st != nil {
+			if v.Delta.StopReason != "" {
+				st.stop = v.Delta.StopReason
+			}
+			if v.Usage.OutputTokens > 0 {
+				st.hasUsage = true
+				st.outputTokens = v.Usage.OutputTokens
+			}
 		}
 	}
 	return nil

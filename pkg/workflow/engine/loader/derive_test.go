@@ -407,3 +407,29 @@ func TestPromptCarveOutDuplicateOverlayEntriesMerge(t *testing.T) {
 		t.Fatalf("customKey from second overlay entry lost: %v", cfg)
 	}
 }
+
+// A derived workflow that swaps an ai/bedrock node to ai/inference-gateway
+// must null out the base node's maxTokens, or the strict gateway decode
+// rejects the merged config at load.
+func TestMergeDerivedBedrockToGatewayMaxTokens(t *testing.T) {
+	base := `{"id":"base","nodes":[{"id":"bedrock1","type":"ai/bedrock","config":{"model":"m","maxTokens":4096}}],"connections":[]}`
+	cfgOf := func(overlay string) map[string]any {
+		doc := mustMergeWith(t, base, overlay)
+		n := nodesByID(doc)["bedrock1"]
+		if n["type"] != "ai/inference-gateway" {
+			t.Fatalf("type = %v", n["type"])
+		}
+		return n["config"].(map[string]any)
+	}
+	without := cfgOf(`{"id":"d","extends":"base","nodes":[{"id":"bedrock1","type":"ai/inference-gateway","config":{"alias":"A1","basePath":"x"}}]}`)
+	if _, has := without["maxTokens"]; !has {
+		t.Fatalf("maxTokens must survive the merge when not nulled: %v", without)
+	}
+	with := cfgOf(`{"id":"d","extends":"base","nodes":[{"id":"bedrock1","type":"ai/inference-gateway","config":{"alias":"A1","basePath":"x","maxTokens":null}}]}`)
+	if _, has := with["maxTokens"]; has {
+		t.Fatalf("maxTokens null must delete the key: %v", with)
+	}
+	if with["alias"] != "A1" {
+		t.Fatalf("alias lost: %v", with)
+	}
+}

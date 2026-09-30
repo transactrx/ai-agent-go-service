@@ -1,5 +1,37 @@
 # Changelog
 
+## v1.8.0
+
+- **feat: `ai/inference-gateway` LLM node (alias-only).** Model calls go through the org
+  inferenceGateway NATS service (`<INFERENCE_GATEWAY_BASE_PATH>.invokeStream`). The node config
+  is `alias` (a gateway tier) plus timeouts/basePath; the gateway alias row resolves the model
+  and its `paramPolicy` owns every inference parameter. The body carries `alias`, `system`,
+  `messages`, `tools` and forced tool choice only — never `maxTokens`, `temperature` or stop
+  sequences. Unknown config keys fail the workflow at load. A `gateway-policy` log line reports
+  the ack's `appliedParams`/`paramWarnings` when a policy ran. Streams text and tool-use events
+  with seq checking, idle (120 s) and stream (600 s) timeouts. Document blocks are rejected.
+- **refactor(agent): no hardcoded `maxTokens`.** The agent loop no longer sets `MaxTokens: 4096`;
+  each provider decides. `ai/bedrock` payload is unchanged when its node `maxTokens` is unset or
+  4096 (the default); a bedrock node with any other configured `maxTokens` now has it honoured (it
+  was previously overridden by the agent's 4096). Custom `LLMProvider` implementations must apply
+  their own default, since the agent now sends `MaxTokens == 0`. `ai/bedrock` is otherwise
+  untouched and still available.
+- **feat: `llm-timing` log line** from both LLM providers, one per call:
+  `llm-timing wf= node= provider= model= ttfb_ms= total_ms= in_tok= out_tok= stop= err=`.
+  `ai/bedrock` now parses token usage from `message_start` / `message_delta` for it.
+- **fix(bedrock): Claude 5.5+ payload.** `thinking: disabled` is now sent only for Claude 5.0–5.4;
+  Bedrock rejects it on 5.5 (`"thinking.type.disabled" is not supported for this model`). 5.5 and
+  newer get no `thinking` field (adaptive default). **Auto-update and Claude 5.5+:** the daily
+  auto-update health probe forces a tool call, and Claude 5.5+ rejects forced `tool_choice` (400
+  ValidationException). The probe therefore always fails on 5.5+, is treated as conclusive, and
+  recovery swaps live traffic to an older validated model. When pinning a 5.5+ model set
+  `autoUpdate: false` (or `AI_BEDROCK_MODEL_ID`). Auto-update also cannot promote a node to 5.5+.
+  Follow-up: skip the forced-tool probe on 5.5+.
+
+## v1.7.3
+
+- fix(opensearch): refuse document reads and keep single-object clauses (document-read guard).
+
 ## v1.7.2
 
 - **security(opensearch): aggregation allowlist.** The OpenSearch tool now validates the

@@ -14,9 +14,14 @@ type LLMProvider interface {
 // LLMRequest is the provider-agnostic request envelope. The agent assembles
 // this from history + system + connected tool peers.
 type LLMRequest struct {
-	System      string
-	Messages    []Message
-	Tools       []ToolSpec
+	System   string
+	Messages []Message
+	Tools    []ToolSpec
+
+	// MaxTokens, Temperature and Stop are honoured by ai/bedrock only.
+	// ai/inference-gateway never forwards them: the gateway alias paramPolicy
+	// owns every inference parameter, so a model change is an alias edit.
+	// The agent sends MaxTokens == 0; a provider must apply its own default.
 	MaxTokens   int
 	Temperature *float64
 	Stop        []string

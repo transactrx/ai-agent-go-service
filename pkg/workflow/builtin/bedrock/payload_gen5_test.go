@@ -63,6 +63,31 @@ func TestPayloadByteIdenticalBelowGen5(t *testing.T) {
 	}
 }
 
+// Claude 5.5+ (and any future major >= 6) rejects "thinking.type.disabled"
+// outright — Bedrock: "thinking.type.disabled is not supported for this
+// model. Use thinking.type.adaptive and output_config.effort". For those the
+// envelope must carry no thinking field at all, same as pre-5.0 models.
+func TestPayloadNoThinkingForGen55AndNewer(t *testing.T) {
+	req := node.LLMRequest{
+		MaxTokens: 64,
+		Messages:  []node.Message{{Role: node.UserMsg, Content: []node.ContentBlock{{Type: node.BlockText, Text: "hi"}}}},
+	}
+	cfg := Config{MaxTokens: 64, AnthropicVersion: defaultAnthropicVersion}
+	for _, id := range []string{
+		"us.anthropic.claude-opus-5-5", // gen 5.5: rejects thinking:disabled
+		"us.anthropic.claude-opus-6-0", // future major 6: no thinking field
+		"us.anthropic.claude-opus-4-8", // 4.x: unchanged, no thinking field
+	} {
+		payload, err := buildAnthropicPayload(req, cfg, id)
+		if err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+		if strings.Contains(string(payload), "thinking") {
+			t.Errorf("%s: envelope must not contain thinking: %s", id, payload)
+		}
+	}
+}
+
 // The last-known-good retry may cross a generation boundary, so the payload is
 // rebuilt per attempt with that attempt's model ID.
 func TestStreamRetryRebuildsPayloadPerModel(t *testing.T) {

@@ -39,9 +39,31 @@ Read by the library at startup:
 | `S3_FILES_BUCKET` | — | `<app_name>-assistant-files-<environment>` | Bucket for uploaded files/charts; service panics if it can't resolve one |
 | `DYNAMODB_PROMPTS_TABLE` | — | `opensearchaichatapi-assistant-prompts` | Enables the prompt-admin override store; disabled if init fails |
 | `AWS_REGION_DYNAMODB` | — | `us-east-1` | Region for the prompt store |
-| `INFERENCE_GATEWAY_BASE_PATH` | — | `example.inferenceGateway` | Org inferenceGateway NATS base path; `ai/bedrock` auto-update asks `<base>.resolveModel` for the family's latest release (org value: `trx.inferenceGateway`). Unset/unreachable → Bedrock catalog-scan fallback. Set it in the consuming service's deployment env (Terraform task definition or GitHub environment vars). |
+| `INFERENCE_GATEWAY_BASE_PATH` | — | `example.inferenceGateway` | Org inferenceGateway NATS base path (org value: `trx.inferenceGateway`). Used by `ai/inference-gateway` for every model call (`<base>.invokeStream`; unreachable → the call fails) and by the `ai/bedrock` auto-update (`<base>.resolveModel`; unreachable → Bedrock catalog-scan fallback). Set it in the consuming service's deployment env. |
 | `MODEL_AUTOUPDATE_NOTIFY_SUBJECT` | — | `<NATS_BASE_PATH>.modelAutoUpdate` | Subject for `ai/bedrock` auto-update upgraded/declined notifications |
 | `AI_BEDROCK_MODEL_ID` | — | `""` | Break-glass: when set, every ai/bedrock node uses this model verbatim and auto-update is fully disabled. Empty = auto mode. |
+
+**Claude 5.5+ and auto-update:** the daily auto-update health probe forces a tool call, and Claude
+5.5+ rejects forced `tool_choice` (400 ValidationException). The probe therefore always fails on
+5.5+, is treated as conclusive, and recovery swaps live traffic to an older validated model. When
+pinning a 5.5+ model set `autoUpdate: false` (or `AI_BEDROCK_MODEL_ID`). Auto-update also cannot
+promote a node to 5.5+. Follow-up: skip the forced-tool probe on 5.5+.
+
+### `llm-timing` log line
+
+Every LLM call (`ai/bedrock` and `ai/inference-gateway`) ends with one line:
+`llm-timing wf=<id> node=<id> provider=<type> model=<invoked id> ttfb_ms=<n> total_ms=<n> in_tok=<n> out_tok=<n> stop=<reason> err=<quoted|->`.
+`ttfb_ms` is request send → first streamed event; unknown values print `-`.
+For `ai/inference-gateway`, `model=` is the invoke id from the gateway's ack; if the gateway's
+capacity fallback re-routes the request before any token was streamed, the line still shows the
+acked id (gateway contract limitation).
+
+### `gateway-policy` log line
+
+When the gateway alias an `ai/inference-gateway` node calls carries a `paramPolicy`, every call
+also logs `gateway-policy wf=<id> node=<id> alias=<name> model=<invokeId> applied=<json> warnings=<w1; w2>`:
+`applied` is the compiled request's top-level parameters (what the model actually received),
+`warnings` every change the policy made (e.g. `maxTokens set`). Absent when no policy ran.
 
 ### `ai/bedrock` auto-update notification events
 
