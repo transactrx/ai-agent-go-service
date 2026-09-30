@@ -12,7 +12,7 @@ func TestRegisterDefaults_RegistersGenericTypes(t *testing.T) {
 		t.Fatalf("RegisterDefaults: %v", err)
 	}
 	want := []string{
-		"trigger/nats-chat", "ai/agent", "ai/bedrock",
+		"trigger/nats-chat", "ai/agent", "ai/bedrock", "ai/inference-gateway",
 		"memory/postgres", "memory/dynamodb", "tool/opensearch",
 		"tool/serpapi", "tool/quickchart",
 		"tool/ui-confirm", "tool/ui-pick-one", "tool/ui-human-input",

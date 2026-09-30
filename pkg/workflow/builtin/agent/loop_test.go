@@ -19,13 +19,15 @@ import (
 type fakeLLM struct {
 	scripts [][]node.LLMEvent
 	calls   int
+	last    node.LLMRequest // request of the most recent Stream call
 }
 
 func (fakeLLM) Spec() node.NodeSpec                          { return node.NodeSpec{Role: node.RoleLLM} }
 func (fakeLLM) Init(_ context.Context, _ node.NodeEnv) error { return nil }
 func (fakeLLM) Close(_ context.Context) error                { return nil }
-func (l *fakeLLM) Stream(_ context.Context, _ node.LLMRequest, out chan<- node.LLMEvent) error {
+func (l *fakeLLM) Stream(_ context.Context, req node.LLMRequest, out chan<- node.LLMEvent) error {
 	defer close(out)
+	l.last = req
 	if l.calls >= len(l.scripts) {
 		return fmt.Errorf("fakeLLM: no more scripts")
 	}
@@ -139,6 +141,35 @@ func TestAgentTextOnlyHappyPath(t *testing.T) {
 	}
 	if len(mem.turns) != 1 {
 		t.Fatalf("memory turns: %d", len(mem.turns))
+	}
+}
+
+// The agent sends no inference parameter: each LLM provider decides them
+// (ai/bedrock from its node config, ai/inference-gateway via the gateway
+// alias paramPolicy).
+func TestAgentRequestCarriesNoKnobs(t *testing.T) {
+	llm := &fakeLLM{scripts: [][]node.LLMEvent{{
+		{Kind: node.LLMTextDelta, Delta: "ok"},
+		{Kind: node.LLMMessageStop, Stop: "end_turn"},
+	}}}
+	cfg := Config{MaxIterations: 5, SystemMessage: "sys"}
+	cfg.SystemMessageFixed = cfg.SystemMessage // mirror factory.go setup
+	a := &agentNode{
+		cfg:        cfg,
+		env:        testNodeEnv{},
+		workflowID: "wf",
+		llm:        llm,
+	}
+	a.setFlex("") // initialize merged field (factory.go:61)
+	a.mem = &fakeMem{}
+	if err := a.Process(context.Background(), node.AgentInput{Message: "hi", SessionID: "s1"}, &recordingSink{}); err != nil {
+		t.Fatal(err)
+	}
+	if llm.last.MaxTokens != 0 || llm.last.Temperature != nil || llm.last.Stop != nil || llm.last.ToolChoiceName != "" {
+		t.Fatalf("agent request must carry no knobs: %+v", llm.last)
+	}
+	if llm.last.System == "" || len(llm.last.Messages) == 0 {
+		t.Fatalf("agent request must still carry system and messages: %+v", llm.last)
 	}
 }
 

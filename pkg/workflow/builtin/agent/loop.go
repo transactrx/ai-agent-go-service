@@ -196,11 +196,12 @@ func (a *agentNode) Process(ctx context.Context, in node.AgentInput, sink node.S
 				}
 			}
 
+			// No inference parameter here: the provider decides (ai/bedrock
+			// node config; ai/inference-gateway → gateway alias paramPolicy).
 			req := node.LLMRequest{
-				System:    sys,
-				Messages:  msgs,
-				Tools:     toolSpecs,
-				MaxTokens: 4096,
+				System:   sys,
+				Messages: msgs,
+				Tools:    toolSpecs,
 			}
 
 			llmLabel := fmt.Sprintf("wf=%s agent=%s llm-stream", a.workflowID, a.env.NodeID())
