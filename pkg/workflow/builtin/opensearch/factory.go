@@ -97,6 +97,12 @@ func (t *opensearchTool) Spec() node.NodeSpec {
 	}
 }
 
+// AllowedIndexPattern implements node.IndexScoped: the engine uses it to find
+// which identity function guards this tool's index.
+func (t *opensearchTool) AllowedIndexPattern() string { return t.cfg.AllowedIndexPattern }
+
+var _ node.IndexScoped = (*opensearchTool)(nil)
+
 // FailurePolicy returns the configured policy as a typed value.
 func (t *opensearchTool) FailurePolicy() node.FailurePolicy {
 	return node.FailurePolicy(t.cfg.FailurePolicyValue)

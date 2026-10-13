@@ -89,6 +89,11 @@ func Start(ctx context.Context, deps Deps) (*Runtime, error) {
 			deps.Logger.Printf("RSASSISTANT event=workflow.skipped workflow=%s reason=%q", id, "trigger has no chat subject (not initialized)")
 			continue
 		}
+		access, skip := agentAccess(cfg, wf.IndexAccess)
+		if skip != "" {
+			deps.Logger.Printf("RSASSISTANT event=workflow.skipped workflow=%s reason=%q", id, skip)
+			continue
+		}
 
 		p := &published{name: spec.Name, workflowID: id, endpoint: ep, cfg: cfg, logger: deps.Logger}
 		a, err := agent.New(agent.Config{
@@ -100,7 +105,7 @@ func Start(ctx context.Context, deps Deps) (*Runtime, error) {
 			Tags:          spec.Tags,
 			Skills:        toWireSkills(spec.Skills),
 			Metadata:      map[string]any{"workflowId": id, "chatSubject": ep.ChatSubject(), "bridge": "ai-agent-go-service/rsassistant"},
-			Access:        &wire.AgentAccess{AppID: cfg.AppID, FunctionID: cfg.FunctionID},
+			Access:        &access,
 			IDTValidation: &agent.IDTValidation{
 				Enabled:     true,
 				ObserveOnly: cfg.ObserveOnly,
@@ -127,8 +132,8 @@ func Start(ctx context.Context, deps Deps) (*Runtime, error) {
 		if ep.ResponseMode() != ModeStreaming {
 			mode = "override"
 		}
-		deps.Logger.Printf("RSASSISTANT event=agent.published workflow=%s name=%s subject=%s mode=%s observe_only=%t",
-			id, spec.Name, ep.ChatSubject(), mode, cfg.ObserveOnly)
+		deps.Logger.Printf("RSASSISTANT event=agent.published workflow=%s name=%s subject=%s mode=%s observe_only=%t function=%s",
+			id, spec.Name, ep.ChatSubject(), mode, cfg.ObserveOnly, access.FunctionID)
 	}
 	return rt, nil
 }

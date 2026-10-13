@@ -343,3 +343,26 @@ The bundled `aichat-webix` UI already speaks this protocol
 Set `RSASSISTANT_ENABLED=true` and optionally add a top-level `rsassistant`
 block to a workflow. See `docs/RSASSISTANT.md` for eligibility, identity, and
 environment details.
+
+### Index function (optional)
+
+A policy node can tell the engine which identity function guards an index, so each
+index workflow is published to RSAssistant and checked at the trigger with its own
+function instead of the service-wide `APP_FUNCTION_ID`:
+
+```go
+// implemented by tool/opensearch
+type IndexScoped interface{ AllowedIndexPattern() string }
+
+// implement on your policy node to opt in
+type IndexFunctionProvider interface {
+	FunctionForIndex(ctx context.Context, indexPattern string) (functionID string, err error)
+}
+```
+
+The engine asks the policy peer wired to the tool's `policy` port once, at load (15 s
+timeout); the call must honor `ctx`. Return the function id, or an error for "no usable
+function". A blank id also counts as no usable function. Either way the workflow is
+`unbound`: not published, trigger check denies. A policy node that does not implement
+`IndexFunctionProvider` keeps the old behavior. Triggers that implement
+`node.IndexAccessAware` receive the result before they subscribe.

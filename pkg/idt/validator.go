@@ -123,6 +123,21 @@ func (v *Validator) ValidateIfEnabled(idt, functionId string) (allow bool, denyR
 	if v.functionId != "" {
 		functionId = v.functionId
 	}
+	return v.validate(idt, functionId)
+}
+
+// ValidateForFunction validates idt against functionID exactly as given: the
+// APP_FUNCTION_ID env value is NOT substituted. Callers use it when a workflow
+// has its own function (per-index permission). Pass-through when validation is off.
+func (v *Validator) ValidateForFunction(idt, functionID string) (allow bool, denyReason, userId, accountId string) {
+	if !v.enabled {
+		return true, "", "", ""
+	}
+	return v.validate(idt, functionID)
+}
+
+// validate asks Identity whether idt is valid and grants functionId.
+func (v *Validator) validate(idt, functionId string) (allow bool, denyReason, userId, accountId string) {
 	if idt == "" {
 		if v.failOpen {
 			log.Printf("IDT_METRIC event=validate.fail_open reason=missing_idt agent=%s function=%s", v.agentId, functionId)
