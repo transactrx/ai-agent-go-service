@@ -99,9 +99,12 @@ type natsChatTrigger struct {
 	basePath       string
 	idtValidator   *idt.Validator
 
-	mu   sync.Mutex
-	sink node.TriggerSink
+	mu     sync.Mutex
+	sink   node.TriggerSink
+	access node.IndexAccess // set by the engine before Subscribe; zero value = none
 }
+
+var _ node.IndexAccessAware = (*natsChatTrigger)(nil)
 
 // Spec returns the node's metadata.
 func (t *natsChatTrigger) Spec() node.NodeSpec {

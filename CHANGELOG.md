@@ -1,5 +1,28 @@
 # Changelog
 
+## v1.9.0
+
+- **feat: per-index function permission.** When a workflow's `tool/opensearch` policy peer
+  implements `node.IndexFunctionProvider`, the engine resolves the identity function that guards
+  the tool's index once at load (`bound` / `unbound` / `none`; logged as
+  `engine: workflow=… index=… access=… function=… cause=…`).
+  - `rsassistant`: the agent card declares the index function (`access.functionId`) instead of
+    `APP_FUNCTION_ID`, so the roster and the agent's own token check follow it. An unbound index
+    is not published (`RSASSISTANT event=workflow.skipped … reason="index function unbound: …"`);
+    `agent.published` now ends with `function=<id>`.
+  - `trigger/nats-chat`: the token check uses the index function. Unbound denies with
+    `INDEX_FUNCTION_UNBOUND` without asking identity (logged as
+    `IDT_TRACE event=validate.observed ... would_allow=false reason="INDEX_FUNCTION_UNBOUND"`
+    while `IDT_OBSERVE_ONLY=true`; the trigger check only runs when `IDT_VALIDATION=true`).
+    `IDT_TRACE` lines gain `function=<id>` (`<id>`, or `unbound`, or `app-default` for
+    workflows without an index function).
+  - New optional interfaces in `pkg/workflow/node`: `IndexScoped` (implemented by
+    `tool/opensearch`), `IndexFunctionProvider`, `IndexAccessAware`; new
+    `pkg/idt` `Validator.ValidateForFunction`. A policy node that does not implement
+    `IndexFunctionProvider` keeps today's behavior (`none`, `APP_FUNCTION_ID`).
+- **Fail-closed hardening:** an `IndexAccess` that is `bound` with a blank function id, or has an
+  unrecognized status, is treated as unbound by `rsassistant` and the trigger.
+
 ## v1.8.0
 
 - **feat: `ai/inference-gateway` LLM node (alias-only).** Model calls go through the org

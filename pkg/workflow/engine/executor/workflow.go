@@ -19,6 +19,9 @@ type Workflow struct {
 	Connections map[ConnKey][]ConnRef
 	AllowedTpl  map[string][]string
 	RawConfigs  map[string]json.RawMessage
+	// IndexAccess is resolved once at load: which identity function guards this
+	// workflow's index (none, bound or unbound). Zero value reads as none.
+	IndexAccess node.IndexAccess
 }
 
 // ConnKey identifies a connection's destination.

@@ -3,7 +3,8 @@
 When `RSASSISTANT_ENABLED=true`, the service publishes every **eligible** workflow
 as its own agent on the NATS agent mesh (`nats-agent` protocol v1.1). RSAssistant
 discovers each one on `trx.agent.discover`, shows it to users who hold the
-service's identity function, and consults it on `trx.agent.<name>.chat`.
+agent's identity function (the workflow's index function when it has one, otherwise
+the service's `APP_FUNCTION_ID`), and consults it on `trx.agent.<name>.chat`.
 
 ## Eligibility (decided at startup from the loaded workflow)
 
@@ -37,13 +38,30 @@ wins, others are skipped.
 
 ## Identity
 
-Every card declares `access{appId: APP_ID, functionId: APP_FUNCTION_ID}`. The
-agent validates `X-TRX-IDT` with identity before acknowledging (403 otherwise).
+Every card declares `access{appId: APP_ID, functionId: <function>}`. `<function>` is the
+workflow's **index function** when it has one (see "Per-index function" below) and
+`APP_FUNCTION_ID` otherwise. The agent validates `X-TRX-IDT` with identity before
+acknowledging (403 otherwise).
 The bridge then calls the workflow with `X-Account-Id` / `X-User-Id` taken **only**
 from the verified identity and forwards `X-TRX-IDT`. The workflow's own scope
 policy runs unchanged. `RSASSISTANT_IDT_OBSERVE_ONLY=true` makes the nats-agent
 layer log instead of block, but the bridge still refuses any consult whose
 identity did not resolve to an account and a user.
+
+## Per-index function
+
+A workflow whose `tool/opensearch` policy peer implements `node.IndexFunctionProvider`
+gets its function from that policy node, once, when the workflow loads (the engine logs
+`engine: workflow=<id> index=<pattern> access=bound|unbound|none function=<id> cause=<text>`).
+
+| access | agent card and agent token check | trigger token check |
+|---|---|---|
+| `bound` | that function | that function |
+| `unbound` | **not published**, `workflow.skipped … reason="index function unbound: <cause>"` | denied `INDEX_FUNCTION_UNBOUND` without asking identity; logged as `IDT_TRACE event=validate.observed ... would_allow=false reason="INDEX_FUNCTION_UNBOUND"` while `IDT_OBSERVE_ONLY=true` |
+| `none` | `APP_FUNCTION_ID` | `APP_FUNCTION_ID` |
+
+The trigger token check only runs when `IDT_VALIDATION=true`.
+A change to the function takes effect after a restart. See `docs/EXTENDING.md` for the interfaces.
 
 ## Environment
 
@@ -53,7 +71,7 @@ identity did not resolve to an account and a user.
 | `RSASSISTANT_IDT_OBSERVE_ONLY` | `false` | observe phase for agent IDT validation |
 | `RSASSISTANT_CONSULT_TIMEOUT_SECONDS` | `400` | per-consult timeout (below RSAssistant's 420s) |
 | `RSASSISTANT_AGENT_VERSION` | `1.0.0` | default card version |
-| `APP_ID`, `APP_FUNCTION_ID` | required | card access pair |
+| `APP_ID`, `APP_FUNCTION_ID` | required | card `appId`; `functionId` fallback for workflows without an index function |
 | `NATS_IDENTITY_BASE_PATH`, `NATS_IDENTITY_VALIDATE_SUBJECT` | `trx.identityservice`, `validateInternalToken` | identity subject |
 | `NATS_URL`, `NATS_JWT`, `NATS_KEY` | required | agent connections (same NATS user as the engine) |
 
