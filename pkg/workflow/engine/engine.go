@@ -219,6 +219,15 @@ func (e *Engine) registerOne(ctx context.Context, raw []byte) error {
 		Connections: conns,
 		RawConfigs:  res.RawConfigs,
 	}
+	// Resolve which identity function guards this workflow's index, once, before
+	// the trigger starts listening (a trigger may receive requests as soon as it
+	// subscribes).
+	wf.IndexAccess = resolveIndexAccess(ctx, res.Nodes, conns)
+	e.cfg.Logger.Printf("engine: workflow=%s index=%s access=%s function=%s cause=%q",
+		wf.ID, wf.IndexAccess.Index, wf.IndexAccess.Kind(), wf.IndexAccess.FunctionID, wf.IndexAccess.Cause)
+	if aware, ok := wf.Trigger.(node.IndexAccessAware); ok {
+		aware.SetIndexAccess(wf.IndexAccess)
+	}
 	exec := executor.New(wf, e.cfg.Logger, e.uploader())
 
 	// Subscribe the trigger; sink emits via the executor.
