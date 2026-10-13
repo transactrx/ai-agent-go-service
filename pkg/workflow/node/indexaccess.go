@@ -41,6 +41,7 @@ type IndexScoped interface {
 // IndexFunctionProvider is implemented by a policy node that can say which
 // identity function guards an index pattern. Any error means "no usable
 // function". A policy node that does not implement it keeps today's behavior.
+// The engine bounds the call with a 15 s timeout; implementations must honor ctx.
 type IndexFunctionProvider interface {
 	FunctionForIndex(ctx context.Context, indexPattern string) (functionID string, err error)
 }
