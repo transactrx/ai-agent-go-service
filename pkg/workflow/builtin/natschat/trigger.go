@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -156,36 +157,11 @@ func (t *natsChatTrigger) handle(msg *nats_service.NatsMessage) *nats_service.Na
 		return validationErr(errcode.UserIDMissing, "user id header missing", 400)
 	}
 
-	// IDT handling. Gated by IDT_VALIDATION. When on, IDT_OBSERVE_ONLY picks:
-	//   - observe-only (TEMPORARY rollout): run validation ASYNC and LOG the would-be
-	//     decision, but never block or override identity — zero added latency, current
-	//     flow unchanged. Used until Identity's NATS perms are confirmed via these logs.
-	//   - enforce (default, secure): synchronous — Identity is source of truth; deny on
-	//     fail (403), override inbound user/account on allow.
-	// The IDT_TRACE logs are temporary rollout instrumentation (remove once enforcing).
-	if t.idtValidator != nil && t.idtValidator.Enabled() {
-		idtToken := msg.Header.Get(idt.HeaderIDT)
-		t.logger.Printf("IDT_TRACE event=inbound workflow=%s idt_present=%t idtid=%s inbound_user=%q inbound_account=%q observe_only=%t",
-			t.workflowID, idtToken != "", idt.IdPrefix(idtToken), hdrUser, hdrAccount, t.idtValidator.ObserveOnly())
-		if t.idtValidator.ObserveOnly() {
-			go func(tok, fn, inUser, inAcct string) {
-				allow, reason, vUser, vAcct := t.idtValidator.ValidateIfEnabled(tok, fn)
-				t.logger.Printf("IDT_TRACE event=validate.observed workflow=%s would_allow=%t reason=%q inbound_user=%q inbound_account=%q validated_user=%q validated_account=%q note=OBSERVE-ONLY-not-enforced",
-					fn, allow, reason, inUser, inAcct, vUser, vAcct)
-			}(idtToken, t.workflowID, hdrUser, hdrAccount)
-		} else {
-			allow, reason, validatedUser, validatedAccount := t.idtValidator.ValidateIfEnabled(idtToken, t.workflowID)
-			if !allow {
-				t.logger.Printf("IDT_TRACE event=validate.denied workflow=%s reason=%q", t.workflowID, reason)
-				return validationErr(errcode.BadRequest, "IDT validation failed: "+reason, 403)
-			}
-			if validatedUser != "" {
-				hdrUser = validatedUser
-			}
-			if validatedAccount != "" {
-				hdrAccount = validatedAccount
-			}
-		}
+	// IDT handling lives in authorizeIDT (see its comment). Gated by IDT_VALIDATION;
+	// IDT_OBSERVE_ONLY picks log-only vs enforce.
+	hdrUser, hdrAccount, authErr := t.authorizeIDT(msg, hdrUser, hdrAccount)
+	if authErr != nil {
+		return authErr
 	}
 
 	var body chatRequestBody
@@ -316,6 +292,116 @@ func (t *natsChatTrigger) handleSingle(msg *nats_service.NatsMessage, body chatR
 func validationErr(code, message string, apiStatusCode int) *nats_service.NatsServiceError {
 	e := nats_service.NewValidationError(message, apiStatusCode, fmt.Errorf("%s", code))
 	return &e
+}
+
+// reasonIndexFunctionUnbound is the deny reason when the workflow's index has
+// no usable identity function. Identity is not asked.
+const reasonIndexFunctionUnbound = "INDEX_FUNCTION_UNBOUND"
+
+// idtTarget says how one request's token is checked.
+type idtTarget struct {
+	perIndex     bool // validate against functionID (this workflow's index function)
+	functionID   string
+	unboundCause string // non-empty: the index has no usable function
+}
+
+// label is the value logged in the function= field.
+func (g idtTarget) label() string {
+	switch {
+	case g.unboundCause != "":
+		return "unbound"
+	case g.perIndex:
+		return g.functionID
+	default:
+		return "app-default"
+	}
+}
+
+// SetIndexAccess implements node.IndexAccessAware. The engine calls it once,
+// before Subscribe, with the function that guards this workflow's index.
+func (t *natsChatTrigger) SetIndexAccess(a node.IndexAccess) {
+	t.mu.Lock()
+	t.access = a
+	t.mu.Unlock()
+}
+
+func (t *natsChatTrigger) currentIDTTarget() idtTarget {
+	t.mu.Lock()
+	a := t.access
+	t.mu.Unlock()
+	switch a.Kind() {
+	case node.IndexAccessBound:
+		// Fail closed: a bound access without a function id must never reach
+		// Identity as a blank functionId.
+		if strings.TrimSpace(a.FunctionID) == "" {
+			return idtTarget{unboundCause: "bound access has no function id"}
+		}
+		return idtTarget{perIndex: true, functionID: a.FunctionID}
+	case node.IndexAccessUnbound:
+		cause := a.Cause
+		if cause == "" {
+			cause = "no usable function"
+		}
+		return idtTarget{unboundCause: cause}
+	case node.IndexAccessNone:
+		return idtTarget{}
+	default:
+		// Fail closed: an unrecognized status must never fall back to the
+		// weaker service-wide check.
+		return idtTarget{unboundCause: "unknown index access status"}
+	}
+}
+
+// validateToken checks one token: unbound denies without asking identity,
+// bound uses the index function, otherwise today's APP_FUNCTION_ID path.
+func (t *natsChatTrigger) validateToken(tok string, tgt idtTarget) (allow bool, reason, userID, accountID string) {
+	switch {
+	case tgt.unboundCause != "":
+		return false, reasonIndexFunctionUnbound, "", ""
+	case tgt.perIndex:
+		return t.idtValidator.ValidateForFunction(tok, tgt.functionID)
+	default:
+		return t.idtValidator.ValidateIfEnabled(tok, t.workflowID)
+	}
+}
+
+// authorizeIDT runs the token check for one request and returns the user and
+// account to use (identity's values replace the inbound ones when enforcing and
+// the token is valid). It returns a 403 result when enforcing and the check fails.
+//
+//   - observe-only (TEMPORARY rollout): validate ASYNC and LOG the would-be decision,
+//     never block or override identity.
+//   - enforce (default, secure): synchronous; Identity is the source of truth.
+//
+// The IDT_TRACE logs are temporary rollout instrumentation (remove once enforcing).
+func (t *natsChatTrigger) authorizeIDT(msg *nats_service.NatsMessage, hdrUser, hdrAccount string) (string, string, *nats_service.NatsServiceError) {
+	if t.idtValidator == nil || !t.idtValidator.Enabled() {
+		return hdrUser, hdrAccount, nil
+	}
+	tgt := t.currentIDTTarget()
+	idtToken := msg.Header.Get(idt.HeaderIDT)
+	t.logger.Printf("IDT_TRACE event=inbound workflow=%s idt_present=%t idtid=%s inbound_user=%q inbound_account=%q observe_only=%t function=%s",
+		t.workflowID, idtToken != "", idt.IdPrefix(idtToken), hdrUser, hdrAccount, t.idtValidator.ObserveOnly(), tgt.label())
+	if t.idtValidator.ObserveOnly() {
+		go func(tok, fn, inUser, inAcct string) {
+			allow, reason, vUser, vAcct := t.validateToken(tok, tgt)
+			t.logger.Printf("IDT_TRACE event=validate.observed workflow=%s would_allow=%t reason=%q inbound_user=%q inbound_account=%q validated_user=%q validated_account=%q note=OBSERVE-ONLY-not-enforced function=%s",
+				fn, allow, reason, inUser, inAcct, vUser, vAcct, tgt.label())
+		}(idtToken, t.workflowID, hdrUser, hdrAccount)
+		return hdrUser, hdrAccount, nil
+	}
+	allow, reason, validatedUser, validatedAccount := t.validateToken(idtToken, tgt)
+	if !allow {
+		t.logger.Printf("IDT_TRACE event=validate.denied workflow=%s reason=%q function=%s", t.workflowID, reason, tgt.label())
+		return hdrUser, hdrAccount, validationErr(errcode.BadRequest, "IDT validation failed: "+reason, 403)
+	}
+	if validatedUser != "" {
+		hdrUser = validatedUser
+	}
+	if validatedAccount != "" {
+		hdrAccount = validatedAccount
+	}
+	return hdrUser, hdrAccount, nil
 }
 
 // serverErr wraps NewServerError. nats-service signature:
