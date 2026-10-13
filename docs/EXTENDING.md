@@ -362,6 +362,7 @@ type IndexFunctionProvider interface {
 
 The engine asks the policy peer wired to the tool's `policy` port once, at load (15 s
 timeout); the call must honor `ctx`. Return the function id, or an error for "no usable
-function" (the workflow is then `unbound`: not published, trigger check denies). A policy
-node that does not implement `IndexFunctionProvider` keeps the old behavior. Triggers that
-implement `node.IndexAccessAware` receive the result before they subscribe.
+function". A blank id also counts as no usable function. Either way the workflow is
+`unbound`: not published, trigger check denies. A policy node that does not implement
+`IndexFunctionProvider` keeps the old behavior. Triggers that implement
+`node.IndexAccessAware` receive the result before they subscribe.

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -240,11 +241,15 @@ func TestRuntimeUsesTheIndexFunctionPerAgentAndSkipsUnbound(t *testing.T) {
 	}
 	if err := chat("tok-app", "agentA"); err == nil {
 		t.Fatal("a user holding only the old app-wide function must be refused by agentA")
+	} else if !strings.Contains(err.Error(), "DENIED_FN") {
+		t.Fatalf("agentA refusal must be the function denial (DENIED_FN), not a transport or timeout error: %v", err)
 	}
 	if err := chat("tok-app", "agentPlain"); err != nil {
 		t.Fatalf("agentPlain keeps the app-wide function: %v", err)
 	}
 	if err := chat("tok-a", "agentPlain"); err == nil {
 		t.Fatal("holder of only an index function must be refused by agentPlain")
+	} else if !strings.Contains(err.Error(), "DENIED_FN") {
+		t.Fatalf("agentPlain refusal must be the function denial (DENIED_FN), not a transport or timeout error: %v", err)
 	}
 }
