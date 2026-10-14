@@ -47,7 +47,7 @@ func TestConfigFromEnvDefaults(t *testing.T) {
 func TestConfigFromEnvOverrides(t *testing.T) {
 	cfg, err := ConfigFromEnv(lookupFrom(map[string]string{
 		"RSASSISTANT_ENABLED":                 "true",
-		"RSASSISTANT_IDT_OBSERVE_ONLY":        "true",
+		"IDT_OBSERVE_ONLY":                    "true",
 		"RSASSISTANT_CONSULT_TIMEOUT_SECONDS": "90",
 		"RSASSISTANT_AGENT_VERSION":           "2.1.0",
 		"APP_ID":                              "app",
@@ -60,6 +60,35 @@ func TestConfigFromEnvOverrides(t *testing.T) {
 	}
 	if !cfg.ObserveOnly || cfg.ConsultTimeout != 90*time.Second || cfg.DefaultVersion != "2.1.0" || cfg.IdentitySubject != "test.identity.validate" {
 		t.Fatalf("unexpected cfg %+v", cfg)
+	}
+}
+
+// TestConfigFromEnvObserveOnlySharedWithTrigger pins the single-switch contract:
+// the agent layer follows IDT_OBSERVE_ONLY (the same flag the trigger reads) and the
+// retired RSASSISTANT_IDT_OBSERVE_ONLY is ignored.
+func TestConfigFromEnvObserveOnlySharedWithTrigger(t *testing.T) {
+	base := map[string]string{"RSASSISTANT_ENABLED": "true", "APP_ID": "app", "APP_FUNCTION_ID": "fn"}
+	withLegacy := map[string]string{"RSASSISTANT_IDT_OBSERVE_ONLY": "true"}
+	for k, v := range base {
+		withLegacy[k] = v
+	}
+	cfg, err := ConfigFromEnv(lookupFrom(withLegacy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ObserveOnly {
+		t.Fatal("RSASSISTANT_IDT_OBSERVE_ONLY must be ignored; only IDT_OBSERVE_ONLY controls the observe phase")
+	}
+	withShared := map[string]string{"IDT_OBSERVE_ONLY": "TRUE"}
+	for k, v := range base {
+		withShared[k] = v
+	}
+	cfg, err = ConfigFromEnv(lookupFrom(withShared))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ObserveOnly {
+		t.Fatal("IDT_OBSERVE_ONLY=true must put the agent layer in observe mode")
 	}
 }
 

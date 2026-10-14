@@ -12,8 +12,11 @@ import (
 )
 
 const (
-	envEnabled        = "RSASSISTANT_ENABLED"
-	envObserveOnly    = "RSASSISTANT_IDT_OBSERVE_ONLY"
+	envEnabled = "RSASSISTANT_ENABLED"
+	// envObserveOnly is the SAME switch the trigger's IDT validator reads
+	// (pkg/idt/validator.go): one flag puts both token checks of a process in
+	// observe (log-only) mode. The former RSASSISTANT_IDT_OBSERVE_ONLY is retired.
+	envObserveOnly    = "IDT_OBSERVE_ONLY"
 	envConsultTimeout = "RSASSISTANT_CONSULT_TIMEOUT_SECONDS"
 	envAgentVersion   = "RSASSISTANT_AGENT_VERSION"
 	envAppID          = "APP_ID"
