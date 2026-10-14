@@ -44,9 +44,10 @@ workflow's **index function** when it has one (see "Per-index function" below) a
 acknowledging (403 otherwise).
 The bridge then calls the workflow with `X-Account-Id` / `X-User-Id` taken **only**
 from the verified identity and forwards `X-TRX-IDT`. The workflow's own scope
-policy runs unchanged. `RSASSISTANT_IDT_OBSERVE_ONLY=true` makes the nats-agent
-layer log instead of block, but the bridge still refuses any consult whose
-identity did not resolve to an account and a user.
+policy runs unchanged. `IDT_OBSERVE_ONLY=true` (the same switch the trigger's token
+check reads) makes the nats-agent layer log instead of block, but the bridge still
+refuses any consult whose identity did not resolve to an account and a user. The
+former `RSASSISTANT_IDT_OBSERVE_ONLY` is retired and ignored.
 
 ## Per-index function
 
@@ -68,7 +69,7 @@ A change to the function takes effect after a restart. See `docs/EXTENDING.md` f
 | Var | Default | Meaning |
 |---|---|---|
 | `RSASSISTANT_ENABLED` | `false` | master switch |
-| `RSASSISTANT_IDT_OBSERVE_ONLY` | `false` | observe phase for agent IDT validation |
+| `IDT_OBSERVE_ONLY` | `false` | observe phase for the agent token check — shared with the trigger (`pkg/idt`); `RSASSISTANT_IDT_OBSERVE_ONLY` is retired |
 | `RSASSISTANT_CONSULT_TIMEOUT_SECONDS` | `400` | per-consult timeout (below RSAssistant's 420s) |
 | `RSASSISTANT_AGENT_VERSION` | `1.0.0` | default card version |
 | `APP_ID`, `APP_FUNCTION_ID` | required | card `appId`; `functionId` fallback for workflows without an index function |

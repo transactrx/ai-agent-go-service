@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.10.0
+
+- **One observe switch for both token checks.** `rsassistant` now reads `IDT_OBSERVE_ONLY`, the
+  same flag the `trigger/nats-chat` token check (`pkg/idt`) already reads, so a process is either
+  observing or enforcing on every path at once. `RSASSISTANT_IDT_OBSERVE_ONLY` is retired and
+  ignored. Operators: drop the old variable and set `IDT_OBSERVE_ONLY` (default `false` =
+  enforce for the agent layer; the trigger check still needs `IDT_VALIDATION=true`).
+
 ## v1.9.0
 
 - **feat: per-index function permission.** When a workflow's `tool/opensearch` policy peer
