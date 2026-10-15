@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+All new behavior is off by default; consumers that bump without config changes behave as before.
+
+- **Opt-in IDT validation cache.** `IDT_VALIDATE_CACHE_SECONDS` (default `0` = off) lets
+  `pkg/idt` reuse a successful validation of the same token + function for that many seconds.
+  Denies and observe-only results are never cached; a cached allow keeps working up to the TTL
+  after a grant is revoked.
+- **Inference node `reasoning`.** `ai/inference-gateway` accepts optional `reasoning`
+  (`"summarized"` only; empty = off) and then streams the model's reasoning summary as
+  `reasoning_delta` events. Reasoning never enters model history.
+- **Agent `surfaceThoughts` thought lines.** With `surfaceThoughts: true` on the agent node, the
+  reasoning summary is relayed as `thought` stream lines (one per completed line, max 300 chars).
+- **`node.LLMReasoningDelta`.** New `LLMEventKind` (`"reasoning_delta"`) carrying a
+  reasoning-summary fragment; providers emit it only when asked.
+
 ## v1.10.0
 
 - **One observe switch for both token checks.** `rsassistant` now reads `IDT_OBSERVE_ONLY`, the
