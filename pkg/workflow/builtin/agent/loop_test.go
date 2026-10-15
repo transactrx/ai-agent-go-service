@@ -1405,3 +1405,55 @@ func TestAgent_ToolRetryCap_AllowsRecoveryWithinCap(t *testing.T) {
 		t.Errorf("expected successful recovery answer, got %s", sink.term.Data)
 	}
 }
+
+func runThoughtTurn(t *testing.T, surface bool) (*recordingSink, *fakeMem) {
+	t.Helper()
+	a := &agentNode{
+		cfg:        Config{MaxIterations: 5, SystemMessage: "sys", SurfaceThoughts: surface},
+		env:        testNodeEnv{},
+		workflowID: "wf",
+		llm: &fakeLLM{scripts: [][]node.LLMEvent{{
+			{Kind: node.LLMReasoningDelta, Delta: "Look at "},
+			{Kind: node.LLMReasoningDelta, Delta: "rejects\nThen"},
+			{Kind: node.LLMTextDelta, Delta: "Answer"},
+			{Kind: node.LLMMessageStop, Stop: "end_turn"},
+		}}},
+	}
+	mem := &fakeMem{}
+	a.mem = mem
+	sink := &recordingSink{}
+	if err := a.Process(context.Background(), node.AgentInput{Message: "hi", SessionID: "s1"}, sink); err != nil {
+		t.Fatal(err)
+	}
+	return sink, mem
+}
+
+func TestAgentSurfaceThoughtsLines(t *testing.T) {
+	sink, mem := runThoughtTurn(t, true)
+	var seq []string
+	for _, e := range sink.events {
+		switch e.Type {
+		case node.StreamThought:
+			seq = append(seq, "thought:"+string(e.Data))
+		case node.StreamDelta:
+			seq = append(seq, "delta")
+		}
+	}
+	want := []string{`thought:{"text":"Look at rejects"}`, `thought:{"text":"Then"}`, "delta"}
+	if strings.Join(seq, "|") != strings.Join(want, "|") {
+		t.Fatalf("seq = %v, want %v", seq, want)
+	}
+	// Reasoning never enters model history.
+	if len(mem.turns) != 1 || strings.Contains(fmt.Sprintf("%+v", mem.turns[0]), "Look at") {
+		t.Fatalf("history leaked reasoning: %+v", mem.turns)
+	}
+}
+
+func TestAgentThoughtsOffByDefault(t *testing.T) {
+	sink, _ := runThoughtTurn(t, false)
+	for _, e := range sink.events {
+		if e.Type == node.StreamThought {
+			t.Fatalf("unexpected thought event: %s", e.Data)
+		}
+	}
+}

@@ -63,6 +63,8 @@ type invokeStreamRequest struct {
 	ToolChoice     string     `json:"toolChoice,omitempty"`
 	ToolChoiceName string     `json:"toolChoiceName,omitempty"`
 
+	Reasoning string `json:"reasoning,omitempty"`
+
 	StreamSubject string `json:"streamSubject"`
 }
 
@@ -88,8 +90,9 @@ func imageFormat(mediaType string) (string, error) {
 // is left for Stream to fill.
 func buildRequest(req node.LLMRequest, cfg Config) (*invokeStreamRequest, error) {
 	out := &invokeStreamRequest{
-		Alias:  cfg.Alias,
-		System: req.System,
+		Alias:     cfg.Alias,
+		System:    req.System,
+		Reasoning: cfg.Reasoning,
 	}
 	for _, m := range req.Messages {
 		wm := wireMessage{Role: string(m.Role), Content: make([]wireBlock, 0, len(m.Content))}

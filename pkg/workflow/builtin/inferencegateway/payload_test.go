@@ -123,3 +123,23 @@ func TestImageFormat(t *testing.T) {
 		t.Fatal("tiff must error")
 	}
 }
+
+func TestBuildRequestReasoningOnlyWhenConfigured(t *testing.T) {
+	req := node.LLMRequest{Messages: []node.Message{{Role: node.UserMsg, Content: []node.ContentBlock{{Type: node.BlockText, Text: "hi"}}}}}
+	for _, c := range []struct {
+		reasoning string
+		want      bool
+	}{{"", false}, {"summarized", true}} {
+		out, err := buildRequest(req, Config{Alias: "X_MODEL", Reasoning: c.reasoning})
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := json.Marshal(out)
+		if got := strings.Contains(string(b), `"reasoning":"summarized"`); got != c.want {
+			t.Fatalf("reasoning=%q body=%s", c.reasoning, b)
+		}
+		if c.reasoning == "" && strings.Contains(string(b), `"reasoning"`) {
+			t.Fatalf("reasoning key leaked: %s", b)
+		}
+	}
+}

@@ -67,3 +67,13 @@ func TestNewLLMDefaults(t *testing.T) {
 		t.Fatalf("overrides not applied: %+v", g)
 	}
 }
+
+func TestFactoryReasoning(t *testing.T) {
+	if _, err := Factory.New(json.RawMessage(`{"alias":"X_MODEL","reasoning":"summarized"}`)); err != nil {
+		t.Fatalf("summarized: %v", err)
+	}
+	_, err := Factory.New(json.RawMessage(`{"alias":"X_MODEL","reasoning":"full"}`))
+	if err == nil || !strings.Contains(err.Error(), `reasoning must be "summarized"`) {
+		t.Fatalf("full: err = %v", err)
+	}
+}
