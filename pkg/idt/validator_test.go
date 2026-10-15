@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"sync"
 	"testing"
+	"time"
 
 	natstest "github.com/nats-io/nats-server/v2/test"
 	"github.com/nats-io/nats.go"
@@ -151,5 +152,105 @@ func TestValidateForFunctionPassesThroughWhenValidationIsOff(t *testing.T) {
 	}
 	if got := stub.functions(); len(got) != 0 {
 		t.Fatalf("identity must not be asked, got %v", got)
+	}
+}
+
+func cacheEnv(t *testing.T, secs string) {
+	t.Helper()
+	setIDTEnv(t, "true")
+	t.Setenv("IDT_VALIDATE_CACHE_SECONDS", secs)
+}
+
+func TestValidateDoesNotCacheByDefault(t *testing.T) {
+	setIDTEnv(t, "true")
+	nc, stub := newIdentityStub(t, "FN-IDX")
+	v, err := NewFromEnv(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.ValidateForFunction("good", "FN-IDX")
+	v.ValidateForFunction("good", "FN-IDX")
+	if got := stub.functions(); len(got) != 2 {
+		t.Fatalf("identity asked %d times, want 2: the cache must be opt-in", len(got))
+	}
+}
+
+func TestValidateCachesAnAllowWhenEnabled(t *testing.T) {
+	cacheEnv(t, "60")
+	nc, stub := newIdentityStub(t, "FN-IDX")
+	v, err := NewFromEnv(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if allow, _, user, acct := v.ValidateForFunction("good", "FN-IDX"); !allow || user != "u-1" || acct != "acct-9" {
+			t.Fatalf("call %d: allow=%v user=%q acct=%q", i, allow, user, acct)
+		}
+	}
+	if got := stub.functions(); len(got) != 1 {
+		t.Fatalf("identity asked %d times, want 1", len(got))
+	}
+}
+
+func TestValidateNeverCachesADeny(t *testing.T) {
+	cacheEnv(t, "60")
+	nc, stub := newIdentityStub(t, "FN-OTHER")
+	v, err := NewFromEnv(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.ValidateForFunction("good", "FN-IDX")
+	v.ValidateForFunction("good", "FN-IDX")
+	if got := stub.functions(); len(got) != 2 {
+		t.Fatalf("identity asked %d times, want 2", len(got))
+	}
+}
+
+func TestValidateCacheIsPerFunctionAndToken(t *testing.T) {
+	cacheEnv(t, "60")
+	nc, stub := newIdentityStub(t, "FN-A", "FN-B")
+	v, err := NewFromEnv(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.ValidateForFunction("good", "FN-A")
+	v.ValidateForFunction("good", "FN-B")
+	if allow, _, _, _ := v.ValidateForFunction("forged", "FN-A"); allow {
+		t.Fatal("a different token must not ride a cached allow")
+	}
+	if got := stub.functions(); len(got) != 3 {
+		t.Fatalf("identity asked %v, want 3 calls", got)
+	}
+}
+
+func TestValidateCacheExpires(t *testing.T) {
+	cacheEnv(t, "60")
+	nc, stub := newIdentityStub(t, "FN-IDX")
+	v, err := NewFromEnv(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	v.now = func() time.Time { return now }
+	v.ValidateForFunction("good", "FN-IDX")
+	now = now.Add(61 * time.Second)
+	v.ValidateForFunction("good", "FN-IDX")
+	if got := stub.functions(); len(got) != 2 {
+		t.Fatalf("identity asked %d times, want 2 after expiry", len(got))
+	}
+}
+
+func TestValidateDoesNotCacheInObserveOnly(t *testing.T) {
+	cacheEnv(t, "60")
+	t.Setenv("IDT_OBSERVE_ONLY", "true")
+	nc, stub := newIdentityStub(t, "FN-IDX")
+	v, err := NewFromEnv(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.ValidateForFunction("good", "FN-IDX")
+	v.ValidateForFunction("good", "FN-IDX")
+	if got := stub.functions(); len(got) != 2 {
+		t.Fatalf("identity asked %d times, want 2", len(got))
 	}
 }
