@@ -1,7 +1,12 @@
 package idt
 
 import (
+	"bytes"
 	"encoding/json"
+	"log"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -252,5 +257,51 @@ func TestValidateDoesNotCacheInObserveOnly(t *testing.T) {
 	v.ValidateForFunction("good", "FN-IDX")
 	if got := stub.functions(); len(got) != 2 {
 		t.Fatalf("identity asked %d times, want 2", len(got))
+	}
+}
+
+func TestCacheTTLFromEnv(t *testing.T) {
+	for _, c := range []struct {
+		raw     string
+		want    time.Duration
+		warning bool
+	}{
+		{"", 0, false},
+		{"0", 0, false},
+		{" 60 ", 60 * time.Second, false},
+		{"3600", 3600 * time.Second, false},
+		{"3601", 3600 * time.Second, true},
+		{"-5", 0, true},
+		{"abc", 0, true},
+		{"60s", 0, true},
+	} {
+		var buf bytes.Buffer
+		log.SetOutput(&buf)
+		got := cacheTTLFromEnv(c.raw)
+		log.SetOutput(os.Stderr)
+		if got != c.want {
+			t.Fatalf("%q: ttl = %s, want %s", c.raw, got, c.want)
+		}
+		out := buf.String()
+		if c.warning != strings.Contains(out, "WARNING IDT_VALIDATE_CACHE_SECONDS=") {
+			t.Fatalf("%q: warning=%v, log=%q", c.raw, c.warning, out)
+		}
+		if c.warning && !strings.Contains(out, strconv.Quote(strings.TrimSpace(c.raw))) {
+			t.Fatalf("%q: warning must name the value, log=%q", c.raw, out)
+		}
+	}
+}
+
+func TestValidateInvalidCacheSecondsKeepsCacheOff(t *testing.T) {
+	cacheEnv(t, "-1")
+	nc, stub := newIdentityStub(t, "FN-IDX")
+	v, err := NewFromEnv(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.ValidateForFunction("good", "FN-IDX")
+	v.ValidateForFunction("good", "FN-IDX")
+	if got := stub.functions(); len(got) != 2 {
+		t.Fatalf("identity asked %d times, want 2: an invalid value must keep the cache off", len(got))
 	}
 }

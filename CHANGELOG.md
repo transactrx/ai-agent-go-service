@@ -8,13 +8,19 @@ All new behavior is off by default; consumers that bump without config changes b
   `pkg/idt` reuse a successful validation of the same token + function for that many seconds.
   Denies and observe-only results are never cached; a cached allow keeps working up to the TTL
   after a grant is revoked.
-- **Inference node `reasoning`.** `ai/inference-gateway` accepts optional `reasoning`
-  (`"summarized"` only; empty = off) and then streams the model's reasoning summary as
+- **IDT cache value checks.** An invalid or negative `IDT_VALIDATE_CACHE_SECONDS` logs a
+  `WARNING` naming the variable and value and keeps the cache off. Values above `3600` log a
+  `WARNING` and are capped at `3600`.
+- **Reasoning summary stream.** Reasoning is turned on by the gateway alias `paramPolicy`
+  (`{"set":{"reasoning":"summarized"}}`), never by a workflow: `ai/inference-gateway` has no
+  `reasoning` option (setting it fails the workflow at load, like any unknown key). When the
+  alias enables it, the node turns the gateway's `reasoningDelta` stream events into
   `reasoning_delta` events. Reasoning never enters model history.
 - **Agent `surfaceThoughts` thought lines.** With `surfaceThoughts: true` on the agent node, the
-  reasoning summary is relayed as `thought` stream lines (one per completed line, max 300 chars).
+  reasoning summary (when the alias sends one) is relayed as `thought` stream lines (one per
+  completed line, max 300 chars).
 - **`node.LLMReasoningDelta`.** New `LLMEventKind` (`"reasoning_delta"`) carrying a
-  reasoning-summary fragment; providers emit it only when asked.
+  reasoning-summary fragment; providers emit it only when their model sends one.
 
 ## v1.10.0
 

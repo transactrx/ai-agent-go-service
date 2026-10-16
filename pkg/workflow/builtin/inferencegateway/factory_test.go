@@ -68,12 +68,10 @@ func TestNewLLMDefaults(t *testing.T) {
 	}
 }
 
-func TestFactoryReasoning(t *testing.T) {
-	if _, err := Factory.New(json.RawMessage(`{"alias":"X_MODEL","reasoning":"summarized"}`)); err != nil {
-		t.Fatalf("summarized: %v", err)
-	}
-	_, err := Factory.New(json.RawMessage(`{"alias":"X_MODEL","reasoning":"full"}`))
-	if err == nil || !strings.Contains(err.Error(), `reasoning must be "summarized"`) {
-		t.Fatalf("full: err = %v", err)
+// TestFactoryRejectsReasoning: reasoning belongs to the gateway alias paramPolicy,
+// so a workflow that still sets it fails at load like any other unknown key.
+func TestFactoryRejectsReasoning(t *testing.T) {
+	if _, err := Factory.New(json.RawMessage(`{"alias":"X_MODEL","reasoning":"summarized"}`)); err == nil {
+		t.Fatal("reasoning must be rejected: the gateway alias owns it")
 	}
 }

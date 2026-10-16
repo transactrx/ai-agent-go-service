@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -138,13 +139,7 @@ func NewFromEnv(nc *nats.Conn) (*Validator, error) {
 			timeout = time.Duration(secs) * time.Second
 		}
 	}
-	var cacheTTL time.Duration // default 0: every request asks Identity (unchanged behavior)
-	if raw := strings.TrimSpace(os.Getenv("IDT_VALIDATE_CACHE_SECONDS")); raw != "" {
-		var secs int
-		if _, err := fmt.Sscanf(raw, "%d", &secs); err == nil && secs > 0 {
-			cacheTTL = time.Duration(secs) * time.Second
-		}
-	}
+	cacheTTL := cacheTTLFromEnv(os.Getenv("IDT_VALIDATE_CACHE_SECONDS")) // default 0: every request asks Identity
 	log.Printf("idt: validation enabled (subject=%s.%s, agentId=%s, functionId=%q, observeOnly=%v, failOpen=%v, timeout=%s, cacheTTL=%s)",
 		base, suffix, agentId, functionId, observeOnly, failOpen, timeout, cacheTTL)
 	return &Validator{
@@ -160,6 +155,30 @@ func NewFromEnv(nc *nats.Conn) (*Validator, error) {
 		now:            time.Now,
 		cache:          map[string]cacheEntry{},
 	}, nil
+}
+
+// maxCacheSeconds caps IDT_VALIDATE_CACHE_SECONDS: a cached allow outlives a revoked
+// grant by up to the TTL, so that lag is bounded at one hour.
+const maxCacheSeconds = 3600
+
+// cacheTTLFromEnv parses IDT_VALIDATE_CACHE_SECONDS. Empty or 0 = off (default).
+// An invalid or negative value logs a WARNING and keeps the cache off; a value
+// above maxCacheSeconds logs a WARNING and is capped.
+func cacheTTLFromEnv(raw string) time.Duration {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	secs, err := strconv.Atoi(raw)
+	if err != nil || secs < 0 {
+		log.Printf("idt: WARNING IDT_VALIDATE_CACHE_SECONDS=%q is not a whole number from 0 to %d; validation cache stays off", raw, maxCacheSeconds)
+		return 0
+	}
+	if secs > maxCacheSeconds {
+		log.Printf("idt: WARNING IDT_VALIDATE_CACHE_SECONDS=%q is above %d; capped at %d", raw, maxCacheSeconds, maxCacheSeconds)
+		secs = maxCacheSeconds
+	}
+	return time.Duration(secs) * time.Second
 }
 
 func (v *Validator) Enabled() bool { return v.enabled }

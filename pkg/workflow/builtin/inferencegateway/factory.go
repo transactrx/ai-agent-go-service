@@ -44,9 +44,6 @@ type Config struct {
 
 	// BasePath overrides INFERENCE_GATEWAY_BASE_PATH for this node.
 	BasePath string `json:"basePath,omitempty"`
-
-	// Reasoning optional: "summarized" streams a reasoning summary (gateway reasoning=summarized).
-	Reasoning string `json:"reasoning,omitempty"`
 }
 
 func (c Config) validate() error {
@@ -58,9 +55,6 @@ func (c Config) validate() error {
 	}
 	if c.StreamTimeoutSeconds < 0 || c.IdleTimeoutSeconds < 0 {
 		return errors.New("ai/inference-gateway: timeouts must be positive")
-	}
-	if c.Reasoning != "" && c.Reasoning != "summarized" {
-		return errors.New("ai/inference-gateway: reasoning must be \"summarized\"")
 	}
 	return nil
 }

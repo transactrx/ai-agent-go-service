@@ -116,13 +116,17 @@ engine internals — all coupling goes through the `NodeEnv` passed to `Init` (l
 - **LLM (gateway):** `ai/inference-gateway` — model calls through the org inferenceGateway
   NATS service (`<INFERENCE_GATEWAY_BASE_PATH>.invokeStream`). Config: `alias` (required,
   a gateway tier such as `POWERLINE_CLAIM_SEARCH_MODEL`, `^[A-Z][A-Z0-9_]{1,63}$`), `streamTimeoutSeconds`
-  (600), `idleTimeoutSeconds` (120), `basePath` override, optional `reasoning` (`"summarized"` only: streams the model reasoning summary as `reasoning_delta` events; off by default; with the agent node `surfaceThoughts: true` it is relayed as `thought` stream lines, one per completed line, max 300 chars). Nothing else: the gateway alias row
+  (600), `idleTimeoutSeconds` (120), `basePath` override. Nothing else: the gateway alias row
   resolves the model and its `paramPolicy` owns every inference parameter (`maxTokens`,
   `temperature`, …), so a model change is an alias edit, never a deploy. Any other config key
   (`maxTokens`, `modelId`, `lab`, …) fails the workflow at load: the engine skips that workflow and keeps starting, logging
   `engine: loaded N of M workflows (succeeded: [...]; failed: [...])`. The body sent is `alias`,
   `system`, `messages`, `tools` and a forced `toolChoice` when the request carries one. When the
   alias has a policy the node logs one `gateway-policy` line per call (see DEPLOYMENT.md).
+  Reasoning is an alias setting too (`paramPolicy` `{"set":{"reasoning":"summarized"}}`): when
+  the alias enables it, the node streams the model reasoning summary as `reasoning_delta` events,
+  and with the agent node `surfaceThoughts: true` it is relayed as `thought` stream lines (one per
+  completed line, max 300 chars).
   Document blocks are not supported by the gateway and are rejected.
 - **Agent orchestrator:** `ai/agent` (the LLM↔tool loop; `maxIterations`, fixed + admin-tunable system prompt)
 - **Memory:** `memory/postgres`, `memory/dynamodb`
