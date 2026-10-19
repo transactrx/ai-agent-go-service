@@ -106,6 +106,7 @@ func Start(ctx context.Context, deps Deps) (*Runtime, error) {
 			Skills:        toWireSkills(spec.Skills),
 			Metadata:      map[string]any{"workflowId": id, "chatSubject": ep.ChatSubject(), "bridge": "ai-agent-go-service/rsassistant"},
 			Access:        &access,
+			UserContext:   true, // workflows render userName/userTimeZone/nowLocal
 			IDTValidation: &agent.IDTValidation{
 				Enabled:     true,
 				ObserveOnly: cfg.ObserveOnly,
@@ -176,6 +177,8 @@ func (p *published) handleChat(ctx context.Context, turn *agent.Turn, stream *ag
 		SessionID: turn.SessionID,
 		Text:      messageText(turn.Message),
 		Timeout:   p.cfg.ConsultTimeout,
+		TimeZone:  userTimeZone(turn.Context),
+		UserName:  userName(turn.Context),
 	}, p.logger, stream)
 	if err != nil {
 		p.logger.Printf("RSASSISTANT event=consult.error name=%s run=%s err=%q", p.name, turn.RunID, err.Error())

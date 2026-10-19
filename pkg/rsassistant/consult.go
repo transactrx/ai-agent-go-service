@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/transactrx/nats-agent/pkg/wire"
 )
 
 // consultRequest is one bridged call into a workflow's chat subject.
@@ -15,6 +16,8 @@ type consultRequest struct {
 	AccountID string // from verified identity only
 	UserID    string // from verified identity only
 	IDT       string // forwarded when non-empty
+	TimeZone  string // display only: caller's normalized context (X-Time-Zone)
+	UserName  string // display only: caller's normalized context (X-User-Name)
 	SessionID string
 	Text      string
 	Timeout   time.Duration
@@ -37,6 +40,12 @@ func consult(ctx context.Context, nc *nats.Conn, req consultRequest, logger *log
 	}
 	if req.IDT != "" {
 		headers["X-TRX-IDT"] = req.IDT
+	}
+	if req.TimeZone != "" {
+		headers["X-Time-Zone"] = req.TimeZone
+	}
+	if req.UserName != "" {
+		headers["X-User-Name"] = req.UserName
 	}
 	body, _ := json.Marshal(engineChatBody{Message: req.Text, SessionID: req.SessionID, ResponseMode: ModeStreaming})
 
@@ -67,4 +76,20 @@ func consult(ctx context.Context, nc *nats.Conn, req consultRequest, logger *log
 			}
 		}
 	}
+}
+
+// userTimeZone and userName read the turn's display context (already
+// normalized by the nats-agent runtime). Empty when absent.
+func userTimeZone(c *wire.UserContext) string {
+	if c == nil {
+		return ""
+	}
+	return c.TimeZone
+}
+
+func userName(c *wire.UserContext) string {
+	if c == nil {
+		return ""
+	}
+	return c.UserName
 }

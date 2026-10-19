@@ -194,6 +194,7 @@ func TestRuntimePublishesEligibleWorkflowsAndBridgesVerifiedIdentity(t *testing.
 	run, err := cli.Chat(agentclient.WithIDT(ctx, "good"), "claimSearch", wire.ChatRequest{
 		UserID:  "spoofed-user",
 		Message: wire.Message{Role: "user", Content: []wire.ContentBlock{{Text: "how many?"}}},
+		Context: &wire.UserContext{TimeZone: "America/Chicago", UserName: "Jane\nDoe"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -215,6 +216,13 @@ func TestRuntimePublishesEligibleWorkflowsAndBridgesVerifiedIdentity(t *testing.
 	mu.Lock()
 	if len(seen) != 1 || seen[0].Header.Get("X-User-Id") != "u-1" || seen[0].Header.Get("X-Account-Id") != "acct-9" || seen[0].Header.Get("X-TRX-IDT") != "good" {
 		t.Fatalf("engine saw headers %v", headersOf(seen))
+	}
+	// Display context is forwarded normalized (newline collapsed).
+	if seen[0].Header.Get("X-Time-Zone") != "America/Chicago" || seen[0].Header.Get("X-User-Name") != "Jane Doe" {
+		t.Fatalf("engine saw user context headers %v", headersOf(seen))
+	}
+	if !cards[0].Capabilities.UserContext {
+		t.Fatal("published card must advertise userContext")
 	}
 	mu.Unlock()
 

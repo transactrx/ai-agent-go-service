@@ -73,6 +73,7 @@ func TestConsultSendsIdentityHeadersAndRelaysEvents(t *testing.T) {
 	n, err := consult(context.Background(), nc, consultRequest{
 		Subject: "test.base.SingleSearch", AccountID: "acct-9", UserID: "u-1", IDT: "tok",
 		SessionID: "sess-1", Text: "how many?", Timeout: 5 * time.Second,
+		TimeZone: "America/Chicago", UserName: "Jane Doe",
 	}, silent(), out)
 	if err != nil {
 		t.Fatal(err)
@@ -83,6 +84,9 @@ func TestConsultSendsIdentityHeadersAndRelaysEvents(t *testing.T) {
 	m := <-fe.seen
 	if m.Header.Get("X-Account-Id") != "acct-9" || m.Header.Get("X-User-Id") != "u-1" || m.Header.Get("X-TRX-IDT") != "tok" {
 		t.Fatalf("headers = %v", m.Header)
+	}
+	if m.Header.Get("X-Time-Zone") != "America/Chicago" || m.Header.Get("X-User-Name") != "Jane Doe" {
+		t.Fatalf("user context headers = %v", m.Header)
 	}
 	body := string(m.Data)
 	for _, want := range []string{`"message":"how many?"`, `"sessionId":"sess-1"`, `"responseMode":"streaming"`} {
