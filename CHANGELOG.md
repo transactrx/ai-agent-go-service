@@ -19,6 +19,10 @@ All new behavior is off by default; consumers that bump without config changes b
 - **Agent `surfaceThoughts` thought lines.** With `surfaceThoughts: true` on the agent node, the
   reasoning summary (when the alias sends one) is relayed as `thought` stream lines (one per
   completed line, max 300 chars).
+- **Time zones load in minimal images.** The template renderer embeds Go's time zone database
+  (`time/tzdata`, ~450 KB), so `{{userTimeZone}}` / `{{nowLocal}}` honor `X-Time-Zone` on images
+  without zoneinfo (e.g. `alpine:3`, the chat API's runtime image). Before, such images silently
+  fell back to UTC.
 - **RSAssistant user context.** Requires nats-agent v0.4.0 (protocol 1.3). Published
   workflow agents advertise `userContext`; a consult's display context (user time zone and
   name, already cleaned by nats-agent) is forwarded to the workflow as `X-Time-Zone` /

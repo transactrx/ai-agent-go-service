@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	_ "time/tzdata" // zones must load in minimal images (alpine has no zoneinfo)
 
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/node"
 )
