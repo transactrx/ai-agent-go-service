@@ -3,11 +3,15 @@
 package idt
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -32,6 +36,55 @@ type Validator struct {
 	functionId     string
 	nc             *nats.Conn
 	requestTimeout time.Duration
+	cacheTTL       time.Duration // successful validations reused this long; 0 = off (default)
+	now            func() time.Time
+	mu             sync.Mutex
+	cache          map[string]cacheEntry
+}
+
+// cacheEntry is one remembered ALLOW. Denies are never cached.
+type cacheEntry struct {
+	userID, accountID string
+	expires           time.Time
+}
+
+const cacheMaxEntries = 10_000
+
+// cacheKey hashes the full token (never the readable prefix alone, so a forged
+// cipher tail cannot ride a cached allow) and scopes it to the function asked.
+func cacheKey(idt, functionID string) string {
+	sum := sha256.Sum256([]byte(idt))
+	return hex.EncodeToString(sum[:]) + "|" + functionID
+}
+
+func (v *Validator) cached(idt, functionID string) (string, string, bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	e, ok := v.cache[cacheKey(idt, functionID)]
+	if !ok || !v.now().Before(e.expires) {
+		return "", "", false
+	}
+	return e.userID, e.accountID, true
+}
+
+func (v *Validator) remember(idt, functionID, userID, accountID string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.cache == nil {
+		v.cache = map[string]cacheEntry{}
+	}
+	if len(v.cache) >= cacheMaxEntries {
+		now := v.now()
+		for k, e := range v.cache {
+			if !now.Before(e.expires) {
+				delete(v.cache, k)
+			}
+		}
+		if len(v.cache) >= cacheMaxEntries { // still full: drop all rather than grow
+			v.cache = map[string]cacheEntry{}
+		}
+	}
+	v.cache[cacheKey(idt, functionID)] = cacheEntry{userID: userID, accountID: accountID, expires: v.now().Add(v.cacheTTL)}
 }
 
 // NewFromEnv builds the IDT validator from the environment. When
@@ -86,8 +139,9 @@ func NewFromEnv(nc *nats.Conn) (*Validator, error) {
 			timeout = time.Duration(secs) * time.Second
 		}
 	}
-	log.Printf("idt: validation enabled (subject=%s.%s, agentId=%s, functionId=%q, observeOnly=%v, failOpen=%v, timeout=%s)",
-		base, suffix, agentId, functionId, observeOnly, failOpen, timeout)
+	cacheTTL := cacheTTLFromEnv(os.Getenv("IDT_VALIDATE_CACHE_SECONDS")) // default 0: every request asks Identity
+	log.Printf("idt: validation enabled (subject=%s.%s, agentId=%s, functionId=%q, observeOnly=%v, failOpen=%v, timeout=%s, cacheTTL=%s)",
+		base, suffix, agentId, functionId, observeOnly, failOpen, timeout, cacheTTL)
 	return &Validator{
 		enabled:        true,
 		failOpen:       failOpen,
@@ -97,7 +151,34 @@ func NewFromEnv(nc *nats.Conn) (*Validator, error) {
 		functionId:     functionId,
 		nc:             nc,
 		requestTimeout: timeout,
+		cacheTTL:       cacheTTL,
+		now:            time.Now,
+		cache:          map[string]cacheEntry{},
 	}, nil
+}
+
+// maxCacheSeconds caps IDT_VALIDATE_CACHE_SECONDS: a cached allow outlives a revoked
+// grant by up to the TTL, so that lag is bounded at one hour.
+const maxCacheSeconds = 3600
+
+// cacheTTLFromEnv parses IDT_VALIDATE_CACHE_SECONDS. Empty or 0 = off (default).
+// An invalid or negative value logs a WARNING and keeps the cache off; a value
+// above maxCacheSeconds logs a WARNING and is capped.
+func cacheTTLFromEnv(raw string) time.Duration {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	secs, err := strconv.Atoi(raw)
+	if err != nil || secs < 0 {
+		log.Printf("idt: WARNING IDT_VALIDATE_CACHE_SECONDS=%q is not a whole number from 0 to %d; validation cache stays off", raw, maxCacheSeconds)
+		return 0
+	}
+	if secs > maxCacheSeconds {
+		log.Printf("idt: WARNING IDT_VALIDATE_CACHE_SECONDS=%q is above %d; capped at %d", raw, maxCacheSeconds, maxCacheSeconds)
+		secs = maxCacheSeconds
+	}
+	return time.Duration(secs) * time.Second
 }
 
 func (v *Validator) Enabled() bool { return v.enabled }
@@ -146,6 +227,13 @@ func (v *Validator) validate(idt, functionId string) (allow bool, denyReason, us
 		log.Printf("IDT_METRIC event=validate.deny reason=MISSING_IDT agent=%s function=%s", v.agentId, functionId)
 		return false, "MISSING_IDT", "", ""
 	}
+	useCache := v.cacheTTL > 0 && !v.observeOnly
+	if useCache {
+		if userID, accountID, ok := v.cached(idt, functionId); ok {
+			log.Printf("IDT_METRIC event=validate.cache_hit agent=%s function=%s user=%s account=%s", v.agentId, functionId, userID, accountID)
+			return true, "", userID, accountID
+		}
+	}
 	body, err := json.Marshal(map[string]string{
 		"idt":        idt,
 		"agentId":    v.agentId,
@@ -186,5 +274,8 @@ func (v *Validator) validate(idt, functionId string) (allow bool, denyReason, us
 		return false, "DENIED_FN", "", ""
 	}
 	log.Printf("IDT_METRIC event=validate.allow agent=%s function=%s user=%s account=%s", v.agentId, functionId, result.UserID, result.AccountID)
+	if useCache {
+		v.remember(idt, functionId, result.UserID, result.AccountID)
+	}
 	return true, "", result.UserID, result.AccountID
 }

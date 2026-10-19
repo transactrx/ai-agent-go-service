@@ -1,9 +1,15 @@
 package idt
 
 import (
+	"bytes"
 	"encoding/json"
+	"log"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	natstest "github.com/nats-io/nats-server/v2/test"
 	"github.com/nats-io/nats.go"
@@ -151,5 +157,151 @@ func TestValidateForFunctionPassesThroughWhenValidationIsOff(t *testing.T) {
 	}
 	if got := stub.functions(); len(got) != 0 {
 		t.Fatalf("identity must not be asked, got %v", got)
+	}
+}
+
+func cacheEnv(t *testing.T, secs string) {
+	t.Helper()
+	setIDTEnv(t, "true")
+	t.Setenv("IDT_VALIDATE_CACHE_SECONDS", secs)
+}
+
+func TestValidateDoesNotCacheByDefault(t *testing.T) {
+	setIDTEnv(t, "true")
+	nc, stub := newIdentityStub(t, "FN-IDX")
+	v, err := NewFromEnv(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.ValidateForFunction("good", "FN-IDX")
+	v.ValidateForFunction("good", "FN-IDX")
+	if got := stub.functions(); len(got) != 2 {
+		t.Fatalf("identity asked %d times, want 2: the cache must be opt-in", len(got))
+	}
+}
+
+func TestValidateCachesAnAllowWhenEnabled(t *testing.T) {
+	cacheEnv(t, "60")
+	nc, stub := newIdentityStub(t, "FN-IDX")
+	v, err := NewFromEnv(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if allow, _, user, acct := v.ValidateForFunction("good", "FN-IDX"); !allow || user != "u-1" || acct != "acct-9" {
+			t.Fatalf("call %d: allow=%v user=%q acct=%q", i, allow, user, acct)
+		}
+	}
+	if got := stub.functions(); len(got) != 1 {
+		t.Fatalf("identity asked %d times, want 1", len(got))
+	}
+}
+
+func TestValidateNeverCachesADeny(t *testing.T) {
+	cacheEnv(t, "60")
+	nc, stub := newIdentityStub(t, "FN-OTHER")
+	v, err := NewFromEnv(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.ValidateForFunction("good", "FN-IDX")
+	v.ValidateForFunction("good", "FN-IDX")
+	if got := stub.functions(); len(got) != 2 {
+		t.Fatalf("identity asked %d times, want 2", len(got))
+	}
+}
+
+func TestValidateCacheIsPerFunctionAndToken(t *testing.T) {
+	cacheEnv(t, "60")
+	nc, stub := newIdentityStub(t, "FN-A", "FN-B")
+	v, err := NewFromEnv(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.ValidateForFunction("good", "FN-A")
+	v.ValidateForFunction("good", "FN-B")
+	if allow, _, _, _ := v.ValidateForFunction("forged", "FN-A"); allow {
+		t.Fatal("a different token must not ride a cached allow")
+	}
+	if got := stub.functions(); len(got) != 3 {
+		t.Fatalf("identity asked %v, want 3 calls", got)
+	}
+}
+
+func TestValidateCacheExpires(t *testing.T) {
+	cacheEnv(t, "60")
+	nc, stub := newIdentityStub(t, "FN-IDX")
+	v, err := NewFromEnv(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	v.now = func() time.Time { return now }
+	v.ValidateForFunction("good", "FN-IDX")
+	now = now.Add(61 * time.Second)
+	v.ValidateForFunction("good", "FN-IDX")
+	if got := stub.functions(); len(got) != 2 {
+		t.Fatalf("identity asked %d times, want 2 after expiry", len(got))
+	}
+}
+
+func TestValidateDoesNotCacheInObserveOnly(t *testing.T) {
+	cacheEnv(t, "60")
+	t.Setenv("IDT_OBSERVE_ONLY", "true")
+	nc, stub := newIdentityStub(t, "FN-IDX")
+	v, err := NewFromEnv(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.ValidateForFunction("good", "FN-IDX")
+	v.ValidateForFunction("good", "FN-IDX")
+	if got := stub.functions(); len(got) != 2 {
+		t.Fatalf("identity asked %d times, want 2", len(got))
+	}
+}
+
+func TestCacheTTLFromEnv(t *testing.T) {
+	for _, c := range []struct {
+		raw     string
+		want    time.Duration
+		warning bool
+	}{
+		{"", 0, false},
+		{"0", 0, false},
+		{" 60 ", 60 * time.Second, false},
+		{"3600", 3600 * time.Second, false},
+		{"3601", 3600 * time.Second, true},
+		{"-5", 0, true},
+		{"abc", 0, true},
+		{"60s", 0, true},
+	} {
+		var buf bytes.Buffer
+		log.SetOutput(&buf)
+		got := cacheTTLFromEnv(c.raw)
+		log.SetOutput(os.Stderr)
+		if got != c.want {
+			t.Fatalf("%q: ttl = %s, want %s", c.raw, got, c.want)
+		}
+		out := buf.String()
+		if c.warning != strings.Contains(out, "WARNING IDT_VALIDATE_CACHE_SECONDS=") {
+			t.Fatalf("%q: warning=%v, log=%q", c.raw, c.warning, out)
+		}
+		if c.warning && !strings.Contains(out, strconv.Quote(strings.TrimSpace(c.raw))) {
+			t.Fatalf("%q: warning must name the value, log=%q", c.raw, out)
+		}
+	}
+}
+
+func TestValidateInvalidCacheSecondsKeepsCacheOff(t *testing.T) {
+	cacheEnv(t, "-1")
+	nc, stub := newIdentityStub(t, "FN-IDX")
+	v, err := NewFromEnv(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.ValidateForFunction("good", "FN-IDX")
+	v.ValidateForFunction("good", "FN-IDX")
+	if got := stub.functions(); len(got) != 2 {
+		t.Fatalf("identity asked %d times, want 2: an invalid value must keep the cache off", len(got))
 	}
 }

@@ -264,15 +264,37 @@ func (a *agentNode) Process(ctx context.Context, in node.AgentInput, sink node.S
 			llmErr          error
 		)
 
+		var thought strings.Builder
+		flushThought := func() {
+			line := strings.TrimSpace(thought.String())
+			thought.Reset()
+			if line == "" || !a.cfg.SurfaceThoughts {
+				return
+			}
+			if r := []rune(line); len(r) > 300 {
+				line = string(r[:300]) + "…"
+			}
+			emit(node.StreamEvent{Type: node.StreamThought, Data: mustJSON(map[string]string{"text": line})})
+		}
+
 		for ev := range events {
 			switch ev.Kind {
+			case node.LLMReasoningDelta:
+				for _, part := range strings.SplitAfter(ev.Delta, "\n") {
+					thought.WriteString(part)
+					if strings.HasSuffix(part, "\n") {
+						flushThought()
+					}
+				}
 			case node.LLMTextDelta:
+				flushThought()
 				emit(node.StreamEvent{
 					Type: node.StreamDelta,
 					Data: mustJSON(map[string]string{"text": ev.Delta}),
 				})
 				assistantBlocks = appendOrExtendText(assistantBlocks, ev.Delta)
 			case node.LLMToolUseStop:
+				flushThought()
 				toolCalls = append(toolCalls, ev.ToolUse)
 				a.tracef("iter=%d model tool_call name=%s id=%s inputBytes=%d", iter, ev.ToolUse.Name, ev.ToolUse.ID, len(ev.ToolUse.InputJSON))
 				emit(node.StreamEvent{
@@ -293,6 +315,7 @@ func (a *agentNode) Process(ctx context.Context, in node.AgentInput, sink node.S
 				llmErr = ev.Error
 			}
 		}
+		flushThought()
 		if llmErr != nil {
 			code := errcode.LLMError
 			switch {

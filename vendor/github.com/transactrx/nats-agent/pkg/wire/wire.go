@@ -8,7 +8,7 @@ package wire
 import "encoding/json"
 
 // ProtocolVersion is the version of the agent protocol this library speaks.
-const ProtocolVersion = "1.1"
+const ProtocolVersion = "1.3"
 
 // Subject layout. Agents own <AgentPrefix>.<name>.>, tools own
 // <ToolPrefix>.<name>.>.
@@ -21,7 +21,8 @@ const (
 )
 
 // HeaderIDT is the NATS message header carrying the caller's Internal
-// Delegation Token on chat/invoke/sessions requests (SPEC §5.1). Same name
+// Delegation Token on chat/invoke/sessions requests (SPEC §5.1) and tool runs
+// (SPEC §8.4). Same name
 // trx-gofiber-session uses on the webapp→agent hop.
 const HeaderIDT = "X-TRX-IDT"
 
@@ -119,6 +120,9 @@ type Capabilities struct {
 	Sync        bool `json:"sync"`
 	Sessions    bool `json:"sessions"`
 	Attachments bool `json:"attachments"`
+	// UserContext (v1.3): the agent reads ChatRequest.context (user's time
+	// zone and name) and answers in the user's local time.
+	UserContext bool `json:"userContext,omitempty"`
 }
 
 // AgentAccess maps an agent onto the identity model: an agent IS an
@@ -150,6 +154,9 @@ type ChatRequest struct {
 	Message       Message        `json:"message"`
 	StreamSubject string         `json:"streamSubject"`
 	Metadata      map[string]any `json:"metadata,omitempty"`
+	// Context (v1.3) is display-only user context (time zone, name, locale).
+	// Never authorization. Agents read it normalized (see UserContext).
+	Context *UserContext `json:"context,omitempty"`
 }
 
 type ChatAck struct {
@@ -313,13 +320,21 @@ type ToolCard struct {
 	Tags            []string       `json:"tags,omitempty"`
 	InputSchema     map[string]any `json:"inputSchema"`
 	TimeoutSeconds  int            `json:"timeoutSeconds,omitempty"`
-	Metadata        map[string]any `json:"metadata,omitempty"`
+	// Access (v1.2) registers the tool with the identity model, like an agent
+	// card's access: a caller may run the tool iff the user behind their
+	// token holds functionId. Absent = runs are not authenticated.
+	Access   *AgentAccess   `json:"access,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 type ToolRunRequest struct {
 	ToolUseID string         `json:"toolUseId,omitempty"`
 	Input     map[string]any `json:"input"`
 	UserID    string         `json:"userId,omitempty"`
+	// SessionID (v1.2) names the conversation the call belongs to, so a tool
+	// can keep per-conversation state. It is a locator, never a capability:
+	// tools bind it to the verified caller.
+	SessionID string         `json:"sessionId,omitempty"`
 	Agent     string         `json:"agent,omitempty"`
 	Metadata  map[string]any `json:"metadata,omitempty"`
 }

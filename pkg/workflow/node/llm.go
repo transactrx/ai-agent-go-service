@@ -53,6 +53,9 @@ const (
 	LLMToolUseStop  LLMEventKind = "tool_use_stop"
 	LLMMessageStop  LLMEventKind = "message_stop"
 	LLMError        LLMEventKind = "error"
+
+	// LLMReasoningDelta carries a reasoning-summary fragment (opt-in per provider).
+	LLMReasoningDelta LLMEventKind = "reasoning_delta"
 )
 
 // LLMToolUse accumulates a single tool_use block across start/delta/stop events.

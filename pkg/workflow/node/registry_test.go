@@ -11,9 +11,9 @@ import (
 
 type stubNode struct{}
 
-func (stubNode) Spec() node.NodeSpec                            { return node.NodeSpec{Type: "test/stub"} }
-func (stubNode) Init(_ context.Context, _ node.NodeEnv) error   { return nil }
-func (stubNode) Close(_ context.Context) error                  { return nil }
+func (stubNode) Spec() node.NodeSpec                          { return node.NodeSpec{Type: "test/stub"} }
+func (stubNode) Init(_ context.Context, _ node.NodeEnv) error { return nil }
+func (stubNode) Close(_ context.Context) error                { return nil }
 
 func stubFactory() node.Factory {
 	return node.FactoryFunc(func(_ json.RawMessage) (node.Node, error) { return stubNode{}, nil })

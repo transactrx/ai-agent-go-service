@@ -123,3 +123,15 @@ func TestImageFormat(t *testing.T) {
 		t.Fatal("tiff must error")
 	}
 }
+
+func TestBuildRequestNeverSendsReasoning(t *testing.T) {
+	req := node.LLMRequest{Messages: []node.Message{{Role: node.UserMsg, Content: []node.ContentBlock{{Type: node.BlockText, Text: "hi"}}}}}
+	out, err := buildRequest(req, Config{Alias: "X_MODEL"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(out)
+	if strings.Contains(string(b), `"reasoning"`) {
+		t.Fatalf("reasoning is owned by the gateway alias, must not be sent: %s", b)
+	}
+}

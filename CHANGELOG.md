@@ -1,5 +1,36 @@
 # Changelog
 
+## v1.11.0
+
+New settings are off by default. Two changes act without config: time zones now load on images without zoneinfo (so `X-Time-Zone` is honored instead of silently falling back to UTC), and RSAssistant consults forward the user's time zone and name to workflows.
+
+- **Opt-in IDT validation cache.** `IDT_VALIDATE_CACHE_SECONDS` (default `0` = off) lets
+  `pkg/idt` reuse a successful validation of the same token + function for that many seconds.
+  Denies and observe-only results are never cached; a cached allow keeps working up to the TTL
+  after a grant is revoked.
+- **IDT cache value checks.** An invalid or negative `IDT_VALIDATE_CACHE_SECONDS` logs a
+  `WARNING` naming the variable and value and keeps the cache off. Values above `3600` log a
+  `WARNING` and are capped at `3600`.
+- **Reasoning summary stream.** Reasoning is turned on by the gateway alias `paramPolicy`
+  (`{"set":{"reasoning":"summarized"}}`), never by a workflow: `ai/inference-gateway` has no
+  `reasoning` option (setting it fails the workflow at load, like any unknown key). When the
+  alias enables it, the node turns the gateway's `reasoningDelta` stream events into
+  `reasoning_delta` events. Reasoning never enters model history.
+- **Agent `surfaceThoughts` thought lines.** With `surfaceThoughts: true` on the agent node, the
+  reasoning summary (when the alias sends one) is relayed as `thought` stream lines (one per
+  completed line, max 300 chars).
+- **Time zones load in minimal images.** The template renderer embeds Go's time zone database
+  (`time/tzdata`, ~450 KB), so `{{userTimeZone}}` / `{{nowLocal}}` honor `X-Time-Zone` on images
+  without zoneinfo (e.g. `alpine:3`, the chat API's runtime image). Before, such images silently
+  fell back to UTC.
+- **RSAssistant user context.** Uses nats-agent v0.4.0 (protocol 1.3; bumped from v0.2.0, so this also brings v0.3.0: `pkg/idt`, protocol 1.2, graceful drain). Published
+  workflow agents advertise `userContext`; a consult's display context (user time zone and
+  name, already cleaned by nats-agent) is forwarded to the workflow as `X-Time-Zone` /
+  `X-User-Name`, so `{{userName}}`, `{{userTimeZone}}` and `{{nowLocal}}` work on RSAssistant
+  consults like on direct chat. Absent context behaves as before (UTC). Display only.
+- **`node.LLMReasoningDelta`.** New `LLMEventKind` (`"reasoning_delta"`) carrying a
+  reasoning-summary fragment; providers emit it only when their model sends one.
+
 ## v1.10.0
 
 - **One observe switch for both token checks.** `rsassistant` now reads `IDT_OBSERVE_ONLY`, the

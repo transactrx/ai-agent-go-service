@@ -410,3 +410,19 @@ func TestPolicyLineFormat(t *testing.T) {
 		t.Fatal("empty ack must produce no line")
 	}
 }
+
+func TestStreamReasoningDelta(t *testing.T) {
+	_, nc := runEmbeddedNATS(t)
+	fg := &fakeGateway{status: "200", ack: okAck, events: []string{
+		`{"seq":0,"type":"reasoningDelta","text":"Plan: "}`,
+		`{"seq":1,"type":"done"}`,
+	}}
+	fg.serve(t, nc)
+	evs, err := collect(t, newTestLLM(nc, &bytes.Buffer{}), textReq())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 || evs[0].Kind != node.LLMReasoningDelta || evs[0].Delta != "Plan: " {
+		t.Fatalf("events = %+v", evs)
+	}
+}
