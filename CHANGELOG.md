@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.11.0
 
 New settings are off by default. Two changes act without config: time zones now load on images without zoneinfo (so `X-Time-Zone` is honored instead of silently falling back to UTC), and RSAssistant consults forward the user's time zone and name to workflows.
 
