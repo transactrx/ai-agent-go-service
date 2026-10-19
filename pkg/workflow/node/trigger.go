@@ -26,8 +26,8 @@ type TriggerEvent struct {
 	SessionID  string
 	Body       json.RawMessage
 	Headers    map[string]string
-	StreamSink StreamSink   // non-nil when responseMode == "streaming"
-	Reply      ReplyFunc    // non-nil when responseMode == "single"
+	StreamSink StreamSink // non-nil when responseMode == "streaming"
+	Reply      ReplyFunc  // non-nil when responseMode == "single"
 	Done       <-chan struct{}
 }
 

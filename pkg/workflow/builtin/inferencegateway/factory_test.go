@@ -67,3 +67,11 @@ func TestNewLLMDefaults(t *testing.T) {
 		t.Fatalf("overrides not applied: %+v", g)
 	}
 }
+
+// TestFactoryRejectsReasoning: reasoning belongs to the gateway alias paramPolicy,
+// so a workflow that still sets it fails at load like any other unknown key.
+func TestFactoryRejectsReasoning(t *testing.T) {
+	if _, err := Factory.New(json.RawMessage(`{"alias":"X_MODEL","reasoning":"summarized"}`)); err == nil {
+		t.Fatal("reasoning must be rejected: the gateway alias owns it")
+	}
+}

@@ -115,6 +115,10 @@ func consumeStream(ctx context.Context, sub *nats.Subscription, idle time.Durati
 					emit(ctx, out, node.LLMEvent{Kind: node.LLMToolUseDelta, ToolUse: tu})
 				}
 			}
+		case "reasoningDelta":
+			if ev.Text != "" {
+				emit(ctx, out, node.LLMEvent{Kind: node.LLMReasoningDelta, Delta: ev.Text})
+			}
 		case "toolUseStart":
 			tu := &node.LLMToolUse{ID: ev.ToolUseID, Name: ev.ToolName, InputJSON: []byte("")}
 			accum[ev.ContentIndex] = tu

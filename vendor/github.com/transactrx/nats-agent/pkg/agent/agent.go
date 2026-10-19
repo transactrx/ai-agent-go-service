@@ -19,6 +19,8 @@ import (
 	"github.com/nats-io/nats.go"
 	nats_service "github.com/transactrx/nats-service/pkg/nats-service"
 
+	"github.com/transactrx/nats-agent/pkg/agentclient"
+	"github.com/transactrx/nats-agent/pkg/idt"
 	"github.com/transactrx/nats-agent/pkg/wire"
 )
 
@@ -42,6 +44,17 @@ type Turn struct {
 	Identity Identity
 }
 
+// Location is the user's time zone from the request context, or UTC.
+func (t *Turn) Location() *time.Location { return t.Context.Location() }
+
+// Now is the current time in the user's time zone (UTC when unknown).
+func (t *Turn) Now() time.Time { return time.Now().In(t.Location()) }
+
+// ContextLine is the standard sentence to put in the system prompt so the
+// model knows who is asking and what "today" means for them (see
+// wire.UserContext.Line). Display only, never authorization.
+func (t *Turn) ContextLine() string { return t.Context.Line(time.Now()) }
+
 // ChatHandler runs one streaming chat turn. Emit events through the stream;
 // if the handler returns without emitting a terminal event, the runtime
 // emits done (nil error), error (non-nil), or done/cancelled (run was
@@ -56,7 +69,9 @@ type InvokeHandler func(ctx context.Context, turn *Turn) (*wire.InvokeResponse, 
 // else has sensible defaults. NATS connection settings fall back to the org
 // conventions: NATS_URL, NATS_JWT, NATS_KEY.
 type Config struct {
-	Name             string
+	Name string
+	// Region adds a separately queued regional alias without advertising a second agent.
+	Region           string
 	DisplayName      string
 	Description      string
 	Version          string
@@ -66,7 +81,10 @@ type Config struct {
 	InputModalities  []string // default ["text"]
 	OutputModalities []string // default ["text"]
 	Attachments      bool
-	Metadata         map[string]any
+	// UserContext advertises capability "userContext": this agent reads the
+	// user's time zone and name (Turn.ContextLine) and answers in local time.
+	UserContext bool
+	Metadata    map[string]any
 
 	// Access registers this agent with the identity model (card "access").
 	// nil → read APP_ID / APP_FUNCTION_ID from the environment.
@@ -84,19 +102,21 @@ type Config struct {
 type Agent struct {
 	cfg       Config
 	svc       *nats_service.NatService
+	regional  *nats_service.NatService
 	nc        *nats.Conn
 	chat      ChatHandler
 	invoke    InvokeHandler
 	sessions  SessionStore
 	extra     []nats_service.EndpointRegistration
 	startTime time.Time
-	idt       *idtValidator
+	idt       *idt.Validator
 
 	mu   sync.Mutex
 	runs map[string]*run
 
-	discoverSub *nats.Subscription
-	cancelSub   *nats.Subscription
+	discoverSub       *nats.Subscription
+	cancelSub         *nats.Subscription
+	regionalCancelSub *nats.Subscription
 }
 
 type run struct {
@@ -109,6 +129,9 @@ type run struct {
 func New(cfg Config) (*Agent, error) {
 	if !nameRe.MatchString(cfg.Name) {
 		return nil, fmt.Errorf("invalid agent name %q: must match %s", cfg.Name, nameRe)
+	}
+	if cfg.Region != "" && !nameRe.MatchString(cfg.Region) {
+		return nil, fmt.Errorf("invalid agent region %q", cfg.Region)
 	}
 	if reservedNames[cfg.Name] {
 		return nil, fmt.Errorf("agent name %q is reserved", cfg.Name)
@@ -169,20 +192,30 @@ func New(cfg Config) (*Agent, error) {
 		svc.SetRepositoryURL(cfg.RepositoryURL)
 	}
 
-	idt := newIDTValidator(svc.GetNatsService(), cfg.Access, *cfg.IDTValidation, nil)
+	var regional *nats_service.NatService
+	if cfg.Region != "" {
+		alias := cfg.Name + "_" + cfg.Region
+		regional, err = nats_service.NewLowLevel(wire.AgentPrefix+"."+alias, "agent."+alias, url, jwt, key, 1024*2, 1024*300)
+		if err != nil {
+			return nil, fmt.Errorf("connecting regional agent: %w", err)
+		}
+		regional.SetDescription("Regional route for " + cfg.Name + " in " + cfg.Region)
+	}
+	validator := idt.NewValidator(svc.GetNatsService(), cfg.Access, *cfg.IDTValidation, nil)
 	if cfg.IDTValidation.Enabled {
 		// Log the validator's effective (defaulted) subject, not
 		// cfg.IDTValidation.Subject, which may still be "" here.
 		log.Printf("agent %q: IDT validation enabled (subject=%s appId=%s functionId=%s observeOnly=%v failOpen=%v cacheTTL=%s)",
-			cfg.Name, idt.cfg.Subject, cfg.Access.AppID, cfg.Access.FunctionID, cfg.IDTValidation.ObserveOnly, cfg.IDTValidation.FailOpen, cfg.IDTValidation.CacheTTL)
+			cfg.Name, validator.Config().Subject, cfg.Access.AppID, cfg.Access.FunctionID, cfg.IDTValidation.ObserveOnly, cfg.IDTValidation.FailOpen, cfg.IDTValidation.CacheTTL)
 	}
 
 	return &Agent{
-		cfg:  cfg,
-		svc:  svc,
-		nc:   svc.GetNatsService(),
-		runs: map[string]*run{},
-		idt:  idt,
+		cfg:      cfg,
+		svc:      svc,
+		regional: regional,
+		nc:       svc.GetNatsService(),
+		runs:     map[string]*run{},
+		idt:      validator,
 	}, nil
 }
 
@@ -215,7 +248,7 @@ func (a *Agent) Conn() *nats.Conn { return a.nc }
 // returns the 403 envelope to hand back on deny. Built-in chat/invoke/
 // sessions endpoints call this automatically.
 func (a *Agent) Authorize(msg *nats_service.NatsMessage, sessionID string) (Identity, *nats_service.NatsServiceError) {
-	return a.idt.authorize(msg.Header.Get(wire.HeaderIDT), sessionID)
+	return a.idt.Authorize(msg.Header.Get(wire.HeaderIDT), sessionID)
 }
 
 // Card builds the agent card from the config and wired capabilities.
@@ -245,6 +278,7 @@ func (a *Agent) Card() wire.AgentCard {
 			Sync:        a.invoke != nil,
 			Sessions:    a.sessions != nil,
 			Attachments: a.cfg.Attachments,
+			UserContext: a.cfg.UserContext,
 		},
 		InputModalities:  a.cfg.InputModalities,
 		OutputModalities: a.cfg.OutputModalities,
@@ -276,7 +310,7 @@ func (a *Agent) Start() error {
 		},
 		{
 			Path:        "chat",
-			Description: "Streaming chat turn. Request: {sessionId?, userId?, message, streamSubject, metadata?}. Replies with an ack; events stream to streamSubject until a terminal done/error event.",
+			Description: "Streaming chat turn. Request: {sessionId?, userId?, message, streamSubject, metadata?, context?}. Replies with an ack; events stream to streamSubject until a terminal done/error event.",
 			Response:    &nats_service.ResponseDoc{Description: "ChatAck", ContentType: "application/json"},
 			Handler:     a.handleChat,
 		},
@@ -311,6 +345,15 @@ func (a *Agent) Start() error {
 		return err
 	}
 
+	if a.regional != nil {
+		if err := a.regional.AddEndpointWithDocs(regs); err != nil {
+			return err
+		}
+		if err := a.regional.Start(); err != nil {
+			return err
+		}
+	}
+
 	// Common discovery: one reply per agent (queue group), card on match.
 	discoverSub, err := a.nc.QueueSubscribe(wire.AgentDiscoverSubject, "agent."+a.cfg.Name, func(msg *nats.Msg) {
 		if msg.Reply == "" {
@@ -335,7 +378,7 @@ func (a *Agent) Start() error {
 	a.discoverSub = discoverSub
 
 	// Cancel broadcast: every instance listens; only the run owner replies.
-	cancelSub, err := a.nc.Subscribe(wire.AgentSubject(a.cfg.Name, "cancel"), func(msg *nats.Msg) {
+	cancelHandler := func(msg *nats.Msg) {
 		var req wire.CancelRequest
 		if err := json.Unmarshal(msg.Data, &req); err != nil || req.RunID == "" {
 			return
@@ -351,24 +394,82 @@ func (a *Agent) Start() error {
 			data, _ := json.Marshal(wire.CancelResponse{Cancelled: true})
 			_ = a.nc.Publish(msg.Reply, data)
 		}
-	})
+	}
+	cancelSub, err := a.nc.Subscribe(wire.AgentSubject(a.cfg.Name, "cancel"), cancelHandler)
 	if err != nil {
 		return fmt.Errorf("subscribing to cancel broadcast: %w", err)
 	}
 	a.cancelSub = cancelSub
+	if a.regional != nil {
+		a.regionalCancelSub, err = a.nc.Subscribe(wire.AgentSubject(a.cfg.Name+"_"+a.cfg.Region, "cancel"), cancelHandler)
+		if err != nil {
+			return err
+		}
+	}
 
 	if err := a.svc.Start(); err != nil {
 		return err
+	}
+	// Start returns only after both subscription sets are registered. Callers
+	// may immediately issue requests from another connection.
+	if err := a.nc.FlushTimeout(5 * time.Second); err != nil {
+		return err
+	}
+	if a.regional != nil {
+		if err := a.regional.GetNatsService().FlushTimeout(5 * time.Second); err != nil {
+			return err
+		}
 	}
 	log.Printf("agent %q serving on %s.> (instance %s)", a.cfg.Name, wire.AgentPrefix+"."+a.cfg.Name, a.svc.GetInstanceId())
 	return nil
 }
 
-// Shutdown drains subscriptions. In-flight runs keep their contexts until
-// the process exits.
-func (a *Agent) Shutdown() error {
+// ActiveRuns reports how many chat/invoke runs this instance is serving.
+func (a *Agent) ActiveRuns() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.runs)
+}
+
+// Drain prepares this instance to stop without dropping work: it stops
+// taking new requests (the queue group routes them to other instances),
+// keeps cancel subscribed so users can still stop their runs, and waits
+// until in-flight runs finish or ctx ends. Call Shutdown afterwards. Returns
+// the number of runs still active when it gave up (0 = clean).
+func (a *Agent) Drain(ctx context.Context) int {
+	if a.regional != nil {
+		_ = a.regional.Shutdown()
+	}
 	if a.discoverSub != nil {
 		_ = a.discoverSub.Drain()
+	}
+	_ = a.svc.Shutdown()
+	tick := time.NewTicker(200 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		n := a.ActiveRuns()
+		if n == 0 {
+			return 0
+		}
+		select {
+		case <-ctx.Done():
+			return n
+		case <-tick.C:
+		}
+	}
+}
+
+// Shutdown drains subscriptions. In-flight runs keep their contexts until
+// the process exits; use Drain first to let them finish.
+func (a *Agent) Shutdown() error {
+	if a.regional != nil {
+		_ = a.regional.Shutdown()
+	}
+	if a.discoverSub != nil {
+		_ = a.discoverSub.Drain()
+	}
+	if a.regionalCancelSub != nil {
+		_ = a.regionalCancelSub.Drain()
 	}
 	if a.cancelSub != nil {
 		_ = a.cancelSub.Drain()
@@ -418,6 +519,8 @@ func (a *Agent) parseTurn(msg *nats_service.NatsMessage, needStream bool) (*Turn
 	if req.SessionID == "" {
 		req.SessionID = uuid.New().String()
 	}
+	// Display-only context: bad values are dropped, never fatal.
+	req.Context = req.Context.Normalize()
 	id, aerr := a.Authorize(msg, req.SessionID)
 	if aerr != nil {
 		return nil, aerr
@@ -454,7 +557,7 @@ func (a *Agent) handleChat(msg *nats_service.NatsMessage) *nats_service.NatsServ
 	}
 	msg.ResponseBody = data
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(agentclient.WithUserContext(context.Background(), turn.Context))
 	r := &run{cancel: cancel}
 	a.mu.Lock()
 	a.runs[turn.RunID] = r
@@ -504,7 +607,7 @@ func (a *Agent) handleInvoke(msg *nats_service.NatsMessage) *nats_service.NatsSe
 		return verr
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(agentclient.WithUserContext(context.Background(), turn.Context))
 	defer cancel()
 	a.mu.Lock()
 	a.runs[turn.RunID] = &run{cancel: cancel}

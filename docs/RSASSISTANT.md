@@ -70,6 +70,7 @@ A change to the function takes effect after a restart. See `docs/EXTENDING.md` f
 |---|---|---|
 | `RSASSISTANT_ENABLED` | `false` | master switch |
 | `IDT_OBSERVE_ONLY` | `false` | observe phase for the agent token check — shared with the trigger (`pkg/idt`); `RSASSISTANT_IDT_OBSERVE_ONLY` is retired |
+| `IDT_VALIDATE_CACHE_SECONDS` | `0` (off) | reuse a successful validation of the same token + function for this many seconds (`pkg/idt`). Valid `0`–`3600`; an invalid or negative value logs a `WARNING` and keeps the cache off; above `3600` logs a `WARNING` and is capped at `3600`. Denies and observe-only results are never cached. A cached allow keeps working for up to this many seconds after the grant is revoked (revocation lag) |
 | `RSASSISTANT_CONSULT_TIMEOUT_SECONDS` | `400` | per-consult timeout (below RSAssistant's 420s) |
 | `RSASSISTANT_AGENT_VERSION` | `1.0.0` | default card version |
 | `APP_ID`, `APP_FUNCTION_ID` | required | card `appId`; `functionId` fallback for workflows without an index function |
