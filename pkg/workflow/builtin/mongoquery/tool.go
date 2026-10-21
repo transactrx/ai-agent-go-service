@@ -13,6 +13,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
+	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/internal/toolresult"
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/node"
 )
 
@@ -409,13 +410,13 @@ func (t *Tool) Invoke(ctx context.Context, args json.RawMessage) (json.RawMessag
 			return nil, classifyMongoError("find", err)
 		}
 		docs, truncated := capDocs(docs, limit)
-		return json.Marshal(queryOutput{Op: "find", Docs: docs, Truncated: truncated})
+		return toolresult.Marshal(queryOutput{Op: "find", Docs: docs, Truncated: truncated})
 	case "count":
 		n, err := api.Count(ctx, in.Database, in.Collection, in.Filter)
 		if err != nil {
 			return nil, classifyMongoError("count", err)
 		}
-		return json.Marshal(queryOutput{Op: "count", Count: &n})
+		return toolresult.Marshal(queryOutput{Op: "count", Count: &n})
 	case "aggregate":
 		// Bound server-side work AND detect truncation: append $limit(limit+1).
 		pipeline := append(clonePipeline(in.Pipeline), map[string]any{"$limit": int64(limit + 1)})
@@ -424,7 +425,7 @@ func (t *Tool) Invoke(ctx context.Context, args json.RawMessage) (json.RawMessag
 			return nil, classifyMongoError("aggregate", err)
 		}
 		docs, truncated := capDocs(docs, limit)
-		return json.Marshal(queryOutput{Op: "aggregate", Docs: docs, Truncated: truncated})
+		return toolresult.Marshal(queryOutput{Op: "aggregate", Docs: docs, Truncated: truncated})
 	}
 	return nil, fmt.Errorf("unreachable")
 }

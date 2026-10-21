@@ -315,3 +315,33 @@ func TestChartImageURL(t *testing.T) {
 		})
 	}
 }
+
+func TestInvoke_PresignedURL_NotHTMLEscaped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(pngFixture(1024))
+	}))
+	defer srv.Close()
+
+	signed := "https://s3.example/chart/abc.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=a<b>c"
+	up := &stubUploader{url: signed}
+	tool := newTool(srv.URL, up)
+	tool.http = srv.Client()
+
+	out, err := tool.Invoke(context.Background(), json.RawMessage(`{"type":"bar","data":{"labels":["a"],"datasets":[{"label":"x","data":[1]}]}}`))
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	for _, bad := range []string{`\u0026`, `\u003c`, `\u003e`} {
+		if strings.Contains(string(out), bad) {
+			t.Errorf("result contains %s: %s", bad, out)
+		}
+	}
+	if !strings.Contains(string(out), "SHA256&X-Amz-Credential=a<b>c") {
+		t.Errorf("raw URL missing: %s", out)
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(out, &resp); err != nil || resp["imageUrl"] != signed {
+		t.Errorf("round trip: %v %v", resp, err)
+	}
+}

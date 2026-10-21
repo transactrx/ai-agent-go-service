@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/internal/toolresult"
 )
 
 const (
@@ -115,7 +117,7 @@ func (t *quickchartTool) Invoke(ctx context.Context, args json.RawMessage) (json
 
 	imageURL := chartImageURL(t.cfg.ChartURLPrefix, key, url)
 	t.logger.Printf("chart-trace: quickchart imageUrl prefix=%q -> %q", t.cfg.ChartURLPrefix, imageURL)
-	return json.Marshal(map[string]string{
+	return toolresult.Marshal(map[string]string{
 		"imageUrl": imageURL,
 		"type":     in.Type,
 	})
