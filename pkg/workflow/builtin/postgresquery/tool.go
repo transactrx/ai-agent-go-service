@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/internal/toolresult"
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/node"
 )
 
@@ -247,7 +248,7 @@ func (t *Tool) Invoke(ctx context.Context, args json.RawMessage) (json.RawMessag
 	if err := rows.Err(); err != nil {
 		return nil, classifyPgError(err)
 	}
-	return json.Marshal(out)
+	return toolresult.Marshal(out)
 }
 
 // classifyPgError wraps a query error as a node.ToolError so the engine's

@@ -25,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/internal/toolresult"
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/node"
 )
 
@@ -262,7 +263,7 @@ func (t *Tool) Invoke(ctx context.Context, args json.RawMessage) (json.RawMessag
 		Body:       text,
 		Bytes:      len(body),
 	}
-	return json.Marshal(out)
+	return toolresult.Marshal(out)
 }
 
 var (

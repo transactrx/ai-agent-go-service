@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **Fixed: tool results no longer HTML-escape `&<>`.** `quickchart` (and `web_fetch`, `serpapi`,
+  `postgres_query`, `mongo_query`) returned results via `json.Marshal`, which rewrote `&` as
+  `\u0026`. With no `chartUrlPrefix` the presigned S3 chart URL reached the model escaped, the
+  model copied it into its answer, and the image broke (RSAssistant). Results now use a
+  non-escaping encoder; JSON stays valid and decodes identically.
+
 ## v1.11.0
 
 New settings are off by default. Two changes act without config: time zones now load on images without zoneinfo (so `X-Time-Zone` is honored instead of silently falling back to UTC), and RSAssistant consults forward the user's time zone and name to workflows.
