@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/internal/toolresult"
 	"io"
 	"net/http"
 	"net/url"
 	"strconv"
+
+	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/internal/toolresult"
 )
 
 // Invoke runs one SerpAPI search and returns the trimmed organic results.

@@ -5,10 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/internal/toolresult"
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/internal/toolresult"
 )
 
 const (
