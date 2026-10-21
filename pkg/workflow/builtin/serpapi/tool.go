@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/internal/toolresult"
 	"io"
 	"net/http"
 	"net/url"
@@ -80,7 +81,7 @@ func (t *serpapiTool) Invoke(ctx context.Context, args json.RawMessage) (json.Ra
 			"snippet": parsed.Organic[i].Snippet,
 		})
 	}
-	return json.Marshal(trimmed)
+	return toolresult.Marshal(trimmed)
 }
 
 func truncate(b []byte, n int) string {
