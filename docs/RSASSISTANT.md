@@ -1,7 +1,7 @@
 # Publishing workflows to RSAssistant
 
 When `RSASSISTANT_ENABLED=true`, the service publishes every **eligible** workflow
-as its own agent on the NATS agent mesh (`nats-agent` protocol v1.1). RSAssistant
+as its own agent on the NATS agent mesh (`nats-agent` protocol v1.3). RSAssistant
 discovers each one on `trx.agent.discover`, shows it to users who hold the
 agent's identity function (the workflow's index function when it has one, otherwise
 the service's `APP_FUNCTION_ID`), and consults it on `trx.agent.<name>.chat`.
@@ -48,6 +48,12 @@ policy runs unchanged. `IDT_OBSERVE_ONLY=true` (the same switch the trigger's to
 check reads) makes the nats-agent layer log instead of block, but the bridge still
 refuses any consult whose identity did not resolve to an account and a user. The
 former `RSASSISTANT_IDT_OBSERVE_ONLY` is retired and ignored.
+
+Cards advertise `userContext`. A consult's display context (user time zone and name,
+already cleaned by nats-agent) is forwarded to the workflow as `X-Time-Zone` /
+`X-User-Name`, so `{{userName}}`, `{{userTimeZone}}` and `{{nowLocal}}` work like on
+direct chat. Absent context behaves as before (UTC). Display only: never used for
+scope or authorization.
 
 ## Per-index function
 
@@ -114,4 +120,4 @@ receive other agents' traffic. A newly published workflow name needs its own ent
 
 ## Requirements
 
-Go 1.27.0 or newer (module `go` directive; nats-agent v0.2.0 itself needs 1.26.5).
+Go 1.27.0 or newer (module `go` directive; nats-agent v0.4.0 itself needs 1.26.5).
