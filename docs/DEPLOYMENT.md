@@ -37,6 +37,7 @@ Read by the library at startup:
 | `NATS_KEY` | — | `""` | NATS auth seed |
 | `AWS_REGION` | — | `unknown` | General AWS ops |
 | `S3_FILES_BUCKET` | — | `<app_name>-assistant-files-<environment>` | Bucket for uploaded files/charts; service panics if it can't resolve one |
+| `S3_FILES_REGION` | — | ambient `AWS_REGION` | Region of the files bucket; set it when the bucket lives in one region but the service runs in several (else PutObject fails `PermanentRedirect`). Presigned URLs use the same region |
 | `DYNAMODB_PROMPTS_TABLE` | — | `opensearchaichatapi-assistant-prompts` | Enables the prompt-admin override store; disabled if init fails |
 | `AWS_REGION_DYNAMODB` | — | `us-east-1` | Region for the prompt store |
 | `INFERENCE_GATEWAY_BASE_PATH` | — | `example.inferenceGateway` | Org inferenceGateway NATS base path (org value: `trx.inferenceGateway`). Used by `ai/inference-gateway` for every model call (`<base>.invokeStream`; unreachable → the call fails) and by the `ai/bedrock` auto-update (`<base>.resolveModel`; unreachable → Bedrock catalog-scan fallback). Set it in the consuming service's deployment env. |
