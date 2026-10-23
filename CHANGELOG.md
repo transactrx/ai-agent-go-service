@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Fixed: chart/attachment upload failed in regions other than the bucket's.** New optional
+  `S3_FILES_REGION` pins the S3 files client (and presigned URLs) to the bucket's region; unset
+  keeps the ambient `AWS_REGION`. Previously a service in us-west-2 got `PermanentRedirect` from
+  a us-east-1-only bucket, so charts were missing from answers. The effective region is logged
+  at boot.
 - **Fixed: tool results no longer HTML-escape `&<>`.** `quickchart` (and `web_fetch`, `serpapi`,
   `postgres_query`, `mongo_query`) returned results via `json.Marshal`, which rewrote `&` as
   `\u0026`. With no `chartUrlPrefix` the presigned S3 chart URL reached the model escaped, the

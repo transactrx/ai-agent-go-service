@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -51,6 +52,7 @@ type presignedRequest struct{ URL string }
 // S3Uploader is the real Uploader backed by AWS SDK v2.
 type S3Uploader struct {
 	bucket  string
+	region  string
 	client  s3API
 	presign presignAPI
 	newUUID func() string // injectable for tests; defaults to uuid.NewString
@@ -63,7 +65,11 @@ func New(ctx context.Context, bucket string) (*S3Uploader, error) {
 	if strings.TrimSpace(bucket) == "" {
 		return nil, errors.New("s3files: bucket name is empty (set S3_FILES_BUCKET)")
 	}
-	cfg, err := awsconfig.LoadDefaultConfig(ctx)
+	var loadOpts []func(*awsconfig.LoadOptions) error
+	if r := FilesRegion(); r != "" {
+		loadOpts = append(loadOpts, awsconfig.WithRegion(r))
+	}
+	cfg, err := awsconfig.LoadDefaultConfig(ctx, loadOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("s3files: load aws config: %w", err)
 	}
@@ -71,6 +77,7 @@ func New(ctx context.Context, bucket string) (*S3Uploader, error) {
 	presign := s3.NewPresignClient(client, s3.WithPresignExpires(PresignTTL))
 	return &S3Uploader{
 		bucket:  bucket,
+		region:  cfg.Region,
 		client:  client,
 		presign: presignAdapter{p: presign},
 		newUUID: uuid.NewString,
@@ -89,6 +96,14 @@ func (a presignAdapter) PresignGetObject(ctx context.Context, in *s3.GetObjectIn
 	}
 	return &presignedRequest{URL: req.URL}, nil
 }
+
+// FilesRegion returns the optional S3_FILES_REGION override (trimmed), or ""
+// to use the ambient AWS region. Set it when the files bucket lives in one
+// region but the service runs in several.
+func FilesRegion() string { return strings.TrimSpace(os.Getenv("S3_FILES_REGION")) }
+
+// Region returns the effective region of the S3 client (and presign client).
+func (u *S3Uploader) Region() string { return u.region }
 
 // Bucket returns the configured bucket name. Useful for logging.
 func (u *S3Uploader) Bucket() string { return u.bucket }
