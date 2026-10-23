@@ -56,6 +56,7 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 	hosts["s3files"] = s3files.Uploader(uploader)
 	logger.Printf("boot: s3files uploader configured (bucket=%s)", uploader.Bucket())
+	logger.Printf("boot: s3files bucket=%q region=%q", uploader.Bucket(), uploader.Region())
 
 	// Prompt-store table: explicit env wins; otherwise derive a generic default
 	// from APP_NAME (same convention as the s3 files bucket). No app-specific name

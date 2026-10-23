@@ -175,3 +175,71 @@ func TestUploadAttachment_SanitizesFilename(t *testing.T) {
 		t.Errorf("traversal not blocked: %q", key)
 	}
 }
+
+func setAWSTestEnv(t *testing.T, ambient, filesRegion string) {
+	t.Helper()
+	t.Setenv("AWS_REGION", ambient)
+	t.Setenv("AWS_DEFAULT_REGION", ambient)
+	t.Setenv("AWS_ACCESS_KEY_ID", "AKIADUMMY")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "dummy")
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+	t.Setenv("AWS_CONFIG_FILE", "/nonexistent")
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", "/nonexistent")
+	t.Setenv("S3_FILES_REGION", filesRegion)
+}
+
+func TestFilesRegion(t *testing.T) {
+	t.Setenv("S3_FILES_REGION", "  us-east-1 ")
+	if got := FilesRegion(); got != "us-east-1" {
+		t.Errorf("got %q", got)
+	}
+	t.Setenv("S3_FILES_REGION", "   ")
+	if got := FilesRegion(); got != "" {
+		t.Errorf("got %q, want empty", got)
+	}
+}
+
+func TestNew_RegionOverride(t *testing.T) {
+	setAWSTestEnv(t, "us-west-2", "us-east-1")
+	u, err := New(context.Background(), "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := u.Region(); got != "us-east-1" {
+		t.Errorf("Region()=%q", got)
+	}
+	if got := u.client.(*s3.Client).Options().Region; got != "us-east-1" {
+		t.Errorf("client region=%q", got)
+	}
+}
+
+func TestNew_UnsetKeepsAmbient(t *testing.T) {
+	setAWSTestEnv(t, "us-west-2", "")
+	u, err := New(context.Background(), "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := u.client.(*s3.Client).Options().Region; got != "us-west-2" {
+		t.Errorf("client region=%q", got)
+	}
+	if u.Region() != "us-west-2" {
+		t.Errorf("Region()=%q", u.Region())
+	}
+}
+
+func TestNew_PresignUsesFilesRegion(t *testing.T) {
+	setAWSTestEnv(t, "us-west-2", "us-east-1")
+	u, err := New(context.Background(), "my-bucket")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := u.presign.PresignGetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: aws.String("my-bucket"), Key: aws.String("chart/x.png"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(req.URL, "s3.us-east-1.amazonaws.com") {
+		t.Errorf("presign url host not us-east-1: %s", req.URL)
+	}
+}
