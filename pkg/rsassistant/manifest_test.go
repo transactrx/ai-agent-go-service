@@ -75,3 +75,20 @@ func TestParseManifestRejectsMalformed(t *testing.T) {
 		t.Fatalf("nil raw must yield zero manifest, got %+v err=%v", m, err)
 	}
 }
+
+func TestBuildCardSpecCategory(t *testing.T) {
+	spec, err := BuildCardSpec("wf", "d", json.RawMessage(`{"category":" Operations "}`), "1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Category != "Operations" {
+		t.Fatalf("Category = %q", spec.Category)
+	}
+	spec, err = BuildCardSpec("wf", "d", nil, "1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Category != "" {
+		t.Fatalf("absent Category = %q", spec.Category)
+	}
+}
