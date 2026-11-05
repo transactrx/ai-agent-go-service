@@ -100,6 +100,7 @@ func Start(ctx context.Context, deps Deps) (*Runtime, error) {
 			Name:          spec.Name,
 			DisplayName:   spec.DisplayName,
 			Description:   spec.Description,
+			Category:      spec.Category,
 			Version:       spec.Version,
 			RepositoryURL: deps.RepositoryURL,
 			Tags:          spec.Tags,

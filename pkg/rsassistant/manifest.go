@@ -31,6 +31,7 @@ type Manifest struct {
 	Name        string   `json:"name,omitempty"`
 	DisplayName string   `json:"displayName,omitempty"`
 	Description string   `json:"description,omitempty"`
+	Category    string   `json:"category,omitempty"`
 	Version     string   `json:"version,omitempty"`
 	Tags        []string `json:"tags,omitempty"`
 	Skills      []Skill  `json:"skills,omitempty"`
@@ -41,6 +42,7 @@ type CardSpec struct {
 	Name        string
 	DisplayName string
 	Description string
+	Category    string
 	Version     string
 	Tags        []string
 	Skills      []Skill
@@ -72,6 +74,7 @@ func BuildCardSpec(workflowID, workflowDescription string, raw json.RawMessage, 
 		Name:        strings.TrimSpace(m.Name),
 		DisplayName: strings.TrimSpace(m.DisplayName),
 		Description: strings.TrimSpace(m.Description),
+		Category:    strings.TrimSpace(m.Category),
 		Version:     strings.TrimSpace(m.Version),
 		Tags:        m.Tags,
 		Skills:      m.Skills,
