@@ -23,6 +23,7 @@ Skipped workflows are logged: `RSASSISTANT event=workflow.skipped workflow=<id> 
   "name": "powerlineClaimSearch",
   "displayName": "PowerLine Claim Search",
   "description": "Answers questions about PowerLine pharmacy claims.",
+  "category": "Claims",
   "version": "1.0.0",
   "tags": ["powerline", "claims"],
   "skills": [{"name": "claim-search", "description": "Search and aggregate claims", "examples": ["How many claims were rejected today?"]}]
@@ -31,7 +32,8 @@ Skipped workflows are logged: `RSASSISTANT event=workflow.skipped workflow=<id> 
 
 All fields optional. Defaults: `name` = workflow id, `description` = workflow
 description, `displayName` = name, `version` = `RSASSISTANT_AGENT_VERSION` or
-`1.0.0`. `name` must match `^[a-zA-Z0-9_-]+$`. A block on a base workflow is
+`1.0.0`. `category` (free string, short) groups the agent in RSAssistant's
+"Your specialists" panel; empty = ungrouped. `name` must match `^[a-zA-Z0-9_-]+$`. A block on a base workflow is
 inherited by every workflow that `extends` it; the derived file may override
 fields or set `"enabled": false`. Duplicate names: first workflow id (sorted)
 wins, others are skipped.
