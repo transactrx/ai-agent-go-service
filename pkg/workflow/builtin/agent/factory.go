@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/node"
 )
@@ -142,6 +143,15 @@ func (a *agentNode) Init(_ context.Context, env node.NodeEnv) error {
 }
 
 func (a *agentNode) Close(_ context.Context) error { return nil }
+
+// HumanResponseTimeout is how long the loop waits for a client-UI tool
+// result (humanResponseTimeoutSeconds, default 5m).
+func (a *agentNode) HumanResponseTimeout() time.Duration {
+	if a.cfg.HumanResponseTimeoutSeconds > 0 {
+		return time.Duration(a.cfg.HumanResponseTimeoutSeconds) * time.Second
+	}
+	return 5 * time.Minute
+}
 
 // lookupTool finds a connected tool by spec name.
 func (a *agentNode) lookupTool(name string) node.Tool {

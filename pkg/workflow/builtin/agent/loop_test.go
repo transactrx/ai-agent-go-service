@@ -1457,3 +1457,51 @@ func TestAgentThoughtsOffByDefault(t *testing.T) {
 		}
 	}
 }
+
+// _error on a client result (RSAssistant bridge: the run can't ask the user)
+// is a surfaced tool error carrying the message.
+func TestAgentClientToolErrorBecomesSurfacedError(t *testing.T) {
+	clientTool := &fakeClientTool{
+		name: "Confirm",
+		spec: node.ToolSpec{Name: "Confirm", Description: "yes/no", InputSchema: json.RawMessage(`{}`)},
+	}
+	a := &agentNode{
+		cfg:        Config{MaxIterations: 5, SystemMessage: "sys", HumanResponseTimeoutSeconds: 1},
+		env:        &clientResultEnv{resp: map[string][]byte{"tu1": []byte(`{"_error":"can't ask the user here"}`)}},
+		workflowID: "wf",
+		tools:      []node.Tool{clientTool},
+		llm: &fakeLLM{scripts: [][]node.LLMEvent{
+			{
+				{Kind: node.LLMToolUseStop, ToolUse: &node.LLMToolUse{ID: "tu1", Name: "Confirm", InputJSON: []byte(`{}`)}},
+				{Kind: node.LLMMessageStop, Stop: "tool_use"},
+			},
+			{
+				{Kind: node.LLMTextDelta, Delta: "ok"},
+				{Kind: node.LLMMessageStop, Stop: "end_turn"},
+			},
+		}},
+	}
+	sink := &recordingSink{}
+	if err := a.Process(context.Background(), node.AgentInput{Message: "hi", SessionID: "s1"}, sink); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	var saw bool
+	for _, ev := range sink.events {
+		if ev.Type == node.StreamToolResult && strings.Contains(string(ev.Data), `"isError":true`) &&
+			strings.Contains(string(ev.Data), "can't ask the user here") {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Fatalf("expected tool_result error 'can't ask the user here'; events: %+v", sink.events)
+	}
+}
+
+func TestHumanResponseTimeoutDefault(t *testing.T) {
+	if got := (&agentNode{}).HumanResponseTimeout(); got != 5*time.Minute {
+		t.Fatalf("default = %s", got)
+	}
+	if got := (&agentNode{cfg: Config{HumanResponseTimeoutSeconds: 90}}).HumanResponseTimeout(); got != 90*time.Second {
+		t.Fatalf("configured = %s", got)
+	}
+}

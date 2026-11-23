@@ -76,3 +76,6 @@ require (
 	golang.org/x/text v0.41.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 )
+
+// TEMP ask-user: local replace until nats-agent v0.8.0
+replace github.com/transactrx/nats-agent => ../../../../nats-agent/.claude/worktrees/ask-user

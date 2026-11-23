@@ -8,10 +8,12 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +22,7 @@ import (
 	nats_service "github.com/transactrx/nats-service/pkg/nats-service"
 
 	"github.com/transactrx/nats-agent/pkg/agentclient"
+	"github.com/transactrx/nats-agent/pkg/delegation"
 	"github.com/transactrx/nats-agent/pkg/idt"
 	"github.com/transactrx/nats-agent/pkg/wire"
 )
@@ -41,7 +44,19 @@ type Turn struct {
 	Logger *log.Logger
 	// Identity is the runtime's verdict on the caller (see IDTValidation).
 	// When Identity.Verified, UserID has been replaced by the verified id.
+	// Identity.IDT keeps the first token; see CurrentIDT for renewed ones.
 	Identity Identity
+
+	// DelegationDepth is the effective agent-to-agent hop depth of this turn
+	// (max of the request's delegation field and legacy metadata.hops).
+	DelegationDepth int
+
+	// ValidInputs (v1.7) are the request's inputs (answers to parked asks)
+	// that passed validation; bad ones are logged and dropped. Empty unless
+	// Config.UserInput.
+	ValidInputs []ValidInput
+
+	tok *tokenHolder // current token (Config.Renew); nil = Identity.IDT
 }
 
 // Location is the user's time zone from the request context, or UTC.
@@ -58,8 +73,10 @@ func (t *Turn) ContextLine() string { return t.Context.Line(time.Now()) }
 // ChatHandler runs one streaming chat turn. Emit events through the stream;
 // if the handler returns without emitting a terminal event, the runtime
 // emits done (nil error), error (non-nil), or done/cancelled (run was
-// cancelled). The context is cancelled when the run is cancelled or the
-// agent shuts down.
+// cancelled); when the run ctx was cut (CutReason: budget ErrTimeCap,
+// InterruptAll ErrInterrupted, or a cancel carrying a cut reason), the
+// fallback is an error event carrying that reason. The context is cancelled when the run is
+// cancelled or the agent shuts down.
 type ChatHandler func(ctx context.Context, turn *Turn, stream *Stream) error
 
 // InvokeHandler runs one synchronous turn (capability "sync").
@@ -87,7 +104,29 @@ type Config struct {
 	// UserContext advertises capability "userContext": this agent reads the
 	// user's time zone and name (Turn.ContextLine) and answers in local time.
 	UserContext bool
-	Metadata    map[string]any
+	// Progress (opt-in) advertises capability "progress": Stream.Progress
+	// publishes progress frames and ChatRequest.budget is honored by
+	// callers' idle rules. Default false = today's behavior.
+	Progress bool
+	// Renew (opt-in) advertises capability "renew": the agent accepts a
+	// fresh IDT mid-run. Default false = today's behavior.
+	Renew bool
+	// UserInput (opt-in) advertises capability "userInput": handlers may ask
+	// the user mid-turn (Stream.AskUser) when the request also supports it.
+	// Default false = today's behavior.
+	UserInput bool
+	// AskWait is the live wait of an ask before it is parked. 0 = env
+	// AGENT_ASK_WAIT (a Go duration), else 5m.
+	AskWait  time.Duration
+	Metadata map[string]any
+
+	// Orchestrator (opt-in) lets this agent's handlers delegate to other
+	// agents (agentclient Chat/Invoke). Default false = leaf. When false,
+	// env AGENT_ORCHESTRATOR=true turns it on.
+	Orchestrator bool
+	// MaxDelegationDepth is the deepest inbound delegation depth this agent
+	// accepts; deeper requests are refused (400, code 4003). ≤0 = 1.
+	MaxDelegationDepth int
 
 	// Access registers this agent with the identity model (card "access").
 	// nil → read APP_ID / APP_FUNCTION_ID from the environment.
@@ -123,8 +162,102 @@ type Agent struct {
 }
 
 type run struct {
-	cancel    context.CancelFunc
+	cancel    context.CancelCauseFunc
 	cancelled bool
+}
+
+// ErrTimeCap is context.Cause of a run ctx whose ChatRequest.budget ran out.
+var ErrTimeCap = errors.New("turn reached its time budget")
+
+// ErrInterrupted is context.Cause of a run ctx cancelled by InterruptAll.
+var ErrInterrupted = errors.New("turn interrupted by shutdown")
+
+// CutError is context.Cause of a run ctx cancelled by a cancel request that
+// carried a known cut reason (wire.Reason*): the caller's limits ended the
+// turn, not the user.
+type CutError struct{ Reason string }
+
+func (e *CutError) Error() string { return "turn cut: " + e.Reason }
+
+// cutReasons are the cancel reasons treated as a cut; any other reason is a
+// plain cancel.
+var cutReasons = map[string]string{ // reason → fallback error text
+	wire.ReasonProgressIdle:  "stopped: no progress",
+	wire.ReasonTokenRotation: "stopped: access could not be renewed",
+	wire.ReasonInterrupted:   "interrupted",
+	wire.ReasonTimeCap:       "time limit reached",
+	wire.ReasonUnavailable:   "stopped: a required service was unavailable",
+}
+
+// CutReason is the wire reason for why ctx (a run ctx) was cut: time_cap
+// for ErrTimeCap, interrupted for ErrInterrupted, the reason of a *CutError,
+// else "" (not cut, or cancelled by the user).
+func CutReason(ctx context.Context) string {
+	cause := context.Cause(ctx)
+	var cut *CutError
+	switch {
+	case cause == nil:
+		return ""
+	case errors.Is(cause, ErrTimeCap):
+		return wire.ReasonTimeCap
+	case errors.Is(cause, ErrInterrupted):
+		return wire.ReasonInterrupted
+	case errors.As(cause, &cut):
+		return cut.Reason
+	}
+	return ""
+}
+
+// BudgetMargin is how much earlier than the caller's budget the run ctx
+// ends, so the handler can still send a clean terminal frame.
+const BudgetMargin = 5 * time.Second
+
+// minBudget is the shortest deadline a budget can produce.
+const minBudget = time.Second
+
+// runContext builds the ctx of one run: the user context, cancellable with a
+// cause, plus a deadline (cause ErrTimeCap) when the request carries a
+// budget. Without a budget the ctx has no deadline, as before.
+func runContext(turn *Turn) (context.Context, context.CancelCauseFunc) {
+	parent := agentclient.WithUserContext(context.Background(), turn.Context)
+	if turn.Budget == nil || turn.Budget.RemainingMs <= 0 {
+		return context.WithCancelCause(parent)
+	}
+	d := time.Duration(turn.Budget.RemainingMs)*time.Millisecond - BudgetMargin
+	if d < minBudget {
+		d = minBudget
+	}
+	dctx, stop := context.WithDeadlineCause(parent, time.Now().Add(d), ErrTimeCap)
+	ctx, cancel := context.WithCancelCause(dctx)
+	return ctx, func(cause error) {
+		cancel(cause)
+		stop()
+	}
+}
+
+// ackCaps is ChatAck.caps: nil unless the agent opted into a capability.
+func (a *Agent) ackCaps() *wire.AckCaps {
+	if !a.cfg.Progress && !a.cfg.Renew {
+		return nil
+	}
+	return &wire.AckCaps{Progress: a.cfg.Progress}
+}
+
+// applyDelegationDefaults fills MaxDelegationDepth (≤0 = 1) and the
+// AGENT_ORCHESTRATOR env fallback (only when the field is false).
+func applyDelegationDefaults(cfg *Config) {
+	if cfg.MaxDelegationDepth <= 0 {
+		cfg.MaxDelegationDepth = 1
+	}
+	if !cfg.Orchestrator {
+		cfg.Orchestrator = strings.EqualFold(strings.TrimSpace(os.Getenv("AGENT_ORCHESTRATOR")), "true")
+	}
+}
+
+// withMarker stamps the run ctx with this agent's delegation marker so the
+// agentclient can refuse (leaf) or stamp depth+1 (orchestrator).
+func (a *Agent) withMarker(ctx context.Context, turn *Turn) context.Context {
+	return delegation.With(ctx, delegation.Marker{Depth: turn.DelegationDepth, MayDelegate: a.cfg.Orchestrator})
 }
 
 // New creates an agent. The NATS connection is established immediately
@@ -148,6 +281,8 @@ func New(cfg Config) (*Agent, error) {
 	if len(cfg.OutputModalities) == 0 {
 		cfg.OutputModalities = []string{"text"}
 	}
+	applyDelegationDefaults(&cfg)
+	cfg.AskWait = resolveAskWait(cfg.AskWait)
 	if cfg.Access == nil {
 		cfg.Access = accessFromEnv()
 	}
@@ -283,6 +418,9 @@ func (a *Agent) Card() wire.AgentCard {
 			Sessions:    a.sessions != nil,
 			Attachments: a.cfg.Attachments,
 			UserContext: a.cfg.UserContext,
+			Progress:    a.cfg.Progress,
+			Renew:       a.cfg.Renew,
+			UserInput:   a.cfg.UserInput,
 		},
 		InputModalities:  a.cfg.InputModalities,
 		OutputModalities: a.cfg.OutputModalities,
@@ -331,6 +469,30 @@ func (a *Agent) Start() error {
 				return &fwd
 			},
 		},
+	}
+	if a.cfg.Renew {
+		regs = append(regs, nats_service.EndpointRegistration{
+			Path:        "renew.>",
+			Description: "Per-run renew subjects (trx.agent.<name>.renew.<random>), announced in the chat ack. Answered only by the owning run's own subscription.",
+			// The service's queue subscription on trx.agent.<name>.> also
+			// receives renew requests; stay silent so the owning run's reply
+			// (or no reply once it ended) is the only answer.
+			Handler: func(msg *nats_service.NatsMessage) *nats_service.NatsServiceError {
+				fwd := nats_service.NewForwardedError(msg.Path)
+				return &fwd
+			},
+		})
+	}
+	if a.cfg.UserInput {
+		regs = append(regs, nats_service.EndpointRegistration{
+			Path:        "input.>",
+			Description: "Per-run input subjects (trx.agent.<name>.input.<random>) for answers to asks, announced in the chat ack. Answered only by the owning run's own subscription.",
+			// Same as renew.>: stay silent so only the owning run answers.
+			Handler: func(msg *nats_service.NatsMessage) *nats_service.NatsServiceError {
+				fwd := nats_service.NewForwardedError(msg.Path)
+				return &fwd
+			},
+		})
 	}
 	if a.invoke != nil {
 		regs = append(regs, nats_service.EndpointRegistration{
@@ -390,8 +552,13 @@ func (a *Agent) Start() error {
 		a.mu.Lock()
 		r, ok := a.runs[req.RunID]
 		if ok {
-			r.cancelled = true
-			r.cancel()
+			if _, cut := cutReasons[req.Reason]; cut {
+				// The caller's limits ended the turn: not a user cancel.
+				r.cancel(&CutError{Reason: req.Reason})
+			} else {
+				r.cancelled = true
+				r.cancel(nil)
+			}
 		}
 		a.mu.Unlock()
 		if ok && msg.Reply != "" {
@@ -463,6 +630,19 @@ func (a *Agent) Drain(ctx context.Context) int {
 	}
 }
 
+// InterruptAll cancels every run this instance is serving with cause
+// ErrInterrupted (e.g. when Drain gave up before shutdown) and returns how
+// many. Not a user cancel: a chat handler that returns without a terminal
+// frame ends with an error event of reason "interrupted".
+func (a *Agent) InterruptAll() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, r := range a.runs {
+		r.cancel(ErrInterrupted)
+	}
+	return len(a.runs)
+}
+
 // Shutdown drains subscriptions. In-flight runs keep their contexts until
 // the process exits; use Drain first to let them finish.
 func (a *Agent) Shutdown() error {
@@ -509,7 +689,17 @@ func (a *Agent) parseTurn(msg *nats_service.NatsMessage, needStream bool) (*Turn
 		e := nats_service.NewValidationError("invalid request body", wire.CodeInvalidBody, err)
 		return nil, &e
 	}
-	if len(req.Message.Content) == 0 {
+	// Answer-only turns (no message text) need an opted-in agent and at
+	// least one valid input; validation is pure, so it runs before the gate.
+	var inputs []ValidInput
+	if a.cfg.UserInput && len(req.Inputs) > 0 {
+		logger := msg.Logger
+		if logger == nil {
+			logger = log.Default()
+		}
+		inputs = validInputs(req.Inputs, logger)
+	}
+	if len(req.Message.Content) == 0 && len(inputs) == 0 {
 		e := nats_service.NewValidationError("message with content is required", wire.CodeMissingField, nil)
 		return nil, &e
 	}
@@ -525,6 +715,13 @@ func (a *Agent) parseTurn(msg *nats_service.NatsMessage, needStream bool) (*Turn
 	}
 	// Display-only context: bad values are dropped, never fatal.
 	req.Context = req.Context.Normalize()
+	depth := delegation.Depth(req.Delegation, req.Metadata)
+	if depth > a.cfg.MaxDelegationDepth {
+		e := nats_service.NewValidationError(
+			fmt.Sprintf("delegation depth exceeded (depth=%d, max %d)", depth, a.cfg.MaxDelegationDepth),
+			wire.CodeDelegationDepth, nil)
+		return nil, &e
+	}
 	id, aerr := a.Authorize(msg, req.SessionID)
 	if aerr != nil {
 		return nil, aerr
@@ -533,10 +730,13 @@ func (a *Agent) parseTurn(msg *nats_service.NatsMessage, needStream bool) (*Turn
 		req.UserID = id.UserID
 	}
 	return &Turn{
-		ChatRequest: req,
-		RunID:       "run_" + uuid.New().String(),
-		Logger:      msg.Logger,
-		Identity:    id,
+		ValidInputs:     inputs,
+		ChatRequest:     req,
+		RunID:           "run_" + uuid.New().String(),
+		Logger:          msg.Logger,
+		Identity:        id,
+		DelegationDepth: depth,
+		tok:             &tokenHolder{current: id.IDT, userID: id.UserID, accountID: id.AccountID},
 	}, nil
 }
 
@@ -553,28 +753,69 @@ func (a *Agent) handleChat(msg *nats_service.NatsMessage) *nats_service.NatsServ
 		Agent:         a.cfg.Name,
 		InstanceID:    a.svc.GetInstanceId(),
 		StreamSubject: turn.StreamSubject,
+		Caps:          a.ackCaps(),
+	}
+	// Private renew subject, subscribed before the ack goes out on this
+	// same connection so the caller can use it right away.
+	var renewSub *nats.Subscription
+	if a.cfg.Renew {
+		subject, sub, err := a.subscribeRenew(turn)
+		if err != nil {
+			turn.Logger.Printf("run %s: renew unavailable: %v", turn.RunID, err)
+		} else {
+			ack.Caps.RenewSubject = subject
+			renewSub = sub
+		}
+	}
+	// Private input subject (v1.7), only when both sides opted in.
+	var inputSub *nats.Subscription
+	var asker *asker
+	if a.cfg.UserInput && turn.UserInput != nil && turn.UserInput.Supported {
+		subject, k, sub, err := a.subscribeInput(turn)
+		if err != nil {
+			turn.Logger.Printf("run %s: user input unavailable: %v", turn.RunID, err)
+		} else {
+			if ack.Caps == nil {
+				ack.Caps = &wire.AckCaps{Progress: a.cfg.Progress}
+			}
+			ack.Caps.InputSubject = subject
+			inputSub, asker = sub, k
+		}
+	}
+	endRenew := func() {
+		turn.tok.close()
+		if renewSub != nil {
+			_ = renewSub.Unsubscribe()
+		}
+		if inputSub != nil {
+			_ = inputSub.Unsubscribe()
+		}
 	}
 	data, err := json.Marshal(ack)
 	if err != nil {
+		endRenew()
 		e := nats_service.NewServerError("marshaling ack", wire.CodeInternal, err)
 		return &e
 	}
 	msg.ResponseBody = data
 
-	ctx, cancel := context.WithCancel(agentclient.WithUserContext(context.Background(), turn.Context))
+	ctx, cancel := runContext(turn)
+	ctx = a.withMarker(ctx, turn)
 	r := &run{cancel: cancel}
 	a.mu.Lock()
 	a.runs[turn.RunID] = r
 	a.mu.Unlock()
 
-	stream := newStream(a.nc, turn.StreamSubject, turn.RunID, turn.Logger)
+	stream := newStream(a.nc, turn.StreamSubject, turn.RunID, turn.Logger, a.cfg.Progress)
+	stream.asker = asker
 
 	go func() {
 		defer func() {
+			endRenew()
 			a.mu.Lock()
 			delete(a.runs, turn.RunID)
 			a.mu.Unlock()
-			cancel()
+			cancel(nil)
 		}()
 		defer func() {
 			if rec := recover(); rec != nil {
@@ -593,6 +834,17 @@ func (a *Agent) handleChat(msg *nats_service.NatsMessage) *nats_service.NatsServ
 		switch {
 		case stream.terminated():
 			// handler already ended the run
+		// The first cause decides: a cut keeps its reason even if a user
+		// cancel arrives later; a user cancel that came first leaves cause
+		// context.Canceled, so CutReason is "".
+		case CutReason(ctx) != "":
+			// Fixed text per reason: the handler's raw error is not shown.
+			reason := CutReason(ctx)
+			text, ok := cutReasons[reason]
+			if !ok {
+				text = "turn cut: " + reason
+			}
+			stream.ErrorWithReason(text, wire.CodeInternal, reason)
 		case wasCancelled:
 			stream.Done(wire.StopCancelled, nil)
 		case err != nil:
@@ -611,8 +863,9 @@ func (a *Agent) handleInvoke(msg *nats_service.NatsMessage) *nats_service.NatsSe
 		return verr
 	}
 
-	ctx, cancel := context.WithCancel(agentclient.WithUserContext(context.Background(), turn.Context))
-	defer cancel()
+	ctx, cancel := context.WithCancelCause(agentclient.WithUserContext(context.Background(), turn.Context))
+	ctx = a.withMarker(ctx, turn)
+	defer cancel(nil)
 	a.mu.Lock()
 	a.runs[turn.RunID] = &run{cancel: cancel}
 	a.mu.Unlock()

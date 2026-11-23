@@ -474,11 +474,7 @@ func (a *agentNode) Process(ctx context.Context, in node.AgentInput, sink node.S
 				toolErrClass retry.Class
 			)
 			if cu, ok := tool.(node.ClientUITool); ok && cu.ClientOnly() {
-				timeout := time.Duration(a.cfg.HumanResponseTimeoutSeconds) * time.Second
-				if timeout <= 0 {
-					timeout = 5 * time.Minute
-				}
-				out, err = a.env.AwaitClientToolResult(invokeCtx, toolUseID, timeout)
+				out, err = a.env.AwaitClientToolResult(invokeCtx, toolUseID, a.HumanResponseTimeout())
 				if err != nil {
 					err = fmt.Errorf("client-tool %s: %w", tc.Name, err)
 				} else {
@@ -486,11 +482,16 @@ func (a *agentNode) Process(ctx context.Context, in node.AgentInput, sink node.S
 					// Convert to a surfaced tool error so the LLM treats it like
 					// any other failure and recovers (rephrase/default/move on).
 					var probe struct {
-						Skipped bool `json:"_skipped"`
+						Skipped bool   `json:"_skipped"`
+						Error   string `json:"_error"`
 					}
 					_ = json.Unmarshal(out, &probe)
 					if probe.Skipped {
 						err = errors.New("user declined to answer")
+					} else if probe.Error != "" {
+						// _error: the client could not ask (RSAssistant bridge:
+						// no user input in this run, or a malformed ask).
+						err = errors.New(probe.Error)
 					}
 				}
 			} else {

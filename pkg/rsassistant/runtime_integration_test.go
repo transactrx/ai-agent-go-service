@@ -16,6 +16,7 @@ import (
 	natstest "github.com/nats-io/nats-server/v2/test"
 	"github.com/nats-io/nats.go"
 	"github.com/transactrx/nats-agent/pkg/agentclient"
+	"github.com/transactrx/nats-agent/pkg/ask"
 	"github.com/transactrx/nats-agent/pkg/wire"
 
 	"github.com/transactrx/ai-agent-go-service/pkg/rsassistant"
@@ -55,8 +56,10 @@ func (sinkAgent) Process(_ context.Context, _ node.AgentInput, sink node.StreamS
 	return sink.Close(context.Background(), node.StreamEvent{Type: node.StreamComplete, Data: []byte(`{"finalText":"ok"}`)})
 }
 
-// uiTool: client-only marker so one workflow is ineligible.
+// uiTool: a client-only UI tool, so one workflow is published with userInput.
 type uiTool struct{ sinkAgent }
+
+func (uiTool) ToolSpec() node.ToolSpec { return node.ToolSpec{Name: "ConfirmAction"} }
 
 func (uiTool) Spec() node.NodeSpec {
 	return node.NodeSpec{Type: "tool/ui-confirm", Role: node.RoleTool,
@@ -127,7 +130,7 @@ func TestRuntimePublishesEligibleWorkflowsAndBridgesVerifiedIdentity(t *testing.
 		}
 	})
 
-	// Engine with two workflows: eligible (manifest name) and ineligible (UI tool).
+	// Engine with two workflows: plain (manifest name) and one with a UI tool.
 	dir := t.TempDir()
 	write := func(name, content string) {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
@@ -164,8 +167,8 @@ func TestRuntimePublishesEligibleWorkflowsAndBridgesVerifiedIdentity(t *testing.
 		t.Fatal(err)
 	}
 	defer rt.Shutdown()
-	if names := rt.Names(); len(names) != 1 || names[0] != "claimSearch" {
-		t.Fatalf("published = %v, want [claimSearch]", names)
+	if names := rt.Names(); len(names) != 2 || names[0] != "claimSearch" || names[1] != "UiSearch" {
+		t.Fatalf("published = %v, want [claimSearch UiSearch]", names)
 	}
 
 	cli := agentclient.NewFromConn(nc)
@@ -179,11 +182,24 @@ func TestRuntimePublishesEligibleWorkflowsAndBridgesVerifiedIdentity(t *testing.
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(cards) > 0 {
+		if len(cards) > 1 {
 			break
 		}
 	}
-	if len(cards) != 1 || cards[0].Name != "claimSearch" || cards[0].Access == nil ||
+	// The UI-tool workflow asks the user: userInput with progress and renew
+	// (RSAssistant requires all three). The plain one is unchanged.
+	byName := map[string]wire.AgentCard{}
+	for _, c := range cards {
+		byName[c.Name] = c
+	}
+	if c := byName["UiSearch"].Capabilities; !c.UserInput || !c.Progress || !c.Renew {
+		t.Fatalf("UiSearch capabilities = %+v", c)
+	}
+	if c := byName["claimSearch"].Capabilities; c.UserInput || c.Progress || c.Renew {
+		t.Fatalf("claimSearch capabilities = %+v", c)
+	}
+	cards = []wire.AgentCard{byName["claimSearch"]}
+	if cards[0].Name != "claimSearch" || cards[0].Access == nil ||
 		cards[0].Access.AppID != "APPX" || cards[0].Access.FunctionID != "FNX" || cards[0].Description != "Claims Q&A" {
 		t.Fatalf("cards = %+v", cards)
 	}
@@ -249,4 +265,154 @@ func headersOf(msgs []*nats.Msg) []nats.Header {
 		out = append(out, m.Header)
 	}
 	return out
+}
+
+// End to end through a real nats-agent 1.7 agent: a workflow's client-UI
+// tool call becomes an ask the caller answers on the run's input subject,
+// and the workflow receives the legacy result. A caller without user input
+// gets the tool error at once.
+func TestRuntimeClientUIToolAsksTheUser(t *testing.T) {
+	opts := natstest.DefaultTestOptions
+	opts.Port = -1
+	srv := natstest.RunServer(&opts)
+	defer srv.Shutdown()
+	nc, err := nats.Connect(srv.ClientURL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+	t.Setenv("NATS_URL", srv.ClientURL())
+	t.Setenv("NATS_JWT", "")
+	t.Setenv("NATS_KEY", "")
+	_, _ = nc.Subscribe("test.identity.validateInternalToken", func(m *nats.Msg) {
+		_ = m.Respond([]byte(`{"valid":true,"functionGranted":true,"userId":"u-1","accountId":"acct-9"}`))
+	})
+
+	// Fake engine: tool_call ConfirmAction, wait for the client result on the
+	// announced subject, then finish.
+	results := make(chan string, 2)
+	_, _ = nc.Subscribe("test.base.UiSearch", func(m *nats.Msg) {
+		prefix := "test.base._.tool_result." + m.Reply
+		res := make(chan []byte, 1)
+		sub, _ := nc.Subscribe(prefix+".tu1", func(r *nats.Msg) { res <- r.Data })
+		_ = nc.Flush()
+		go func() {
+			defer sub.Unsubscribe()
+			seq := 0
+			send := func(typ natsstream.StreamEventType, data string) {
+				out := nats.NewMsg(m.Reply)
+				out.Header.Set(natsstream.HdrStreamEvent, string(typ))
+				out.Header.Set(natsstream.HdrStreamSequence, strconv.Itoa(seq))
+				out.Header.Set(natsstream.HdrStreamId, "st")
+				if seq == 0 {
+					out.Header.Set(natsstream.HdrStreamCancelSubject, "test.cancel")
+					out.Header.Set(natsstream.HdrStreamToolResultPrefix, prefix)
+				}
+				seq++
+				out.Data = []byte(data)
+				_ = nc.PublishMsg(out)
+			}
+			send(natsstream.StreamStart, `{"sessionId":"s"}`)
+			send(natsstream.StreamToolCall, `{"toolUseId":"tu1","name":"ConfirmAction","input":{"prompt":"Resubmit 12 claims?"}}`)
+			var r []byte
+			select {
+			case r = <-res:
+			case <-time.After(5 * time.Second):
+			}
+			results <- string(r)
+			send(natsstream.StreamToolResult, `{"toolUseId":"tu1","output":`+string(r)+`,"isError":false}`)
+			send(natsstream.StreamComplete, `{"finalText":"done","messageStop":"end_turn"}`)
+		}()
+	})
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "ui.json"), []byte(fmt.Sprintf(wfJSON, "UiSearch", "", "test/ui")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reg := node.NewRegistry()
+	_ = reg.Register("test/chat-trigger", node.FactoryFunc(func(json.RawMessage) (node.Node, error) { return chatTrigger{subject: "test.base.UiSearch"}, nil }))
+	_ = reg.Register("test/ui", node.FactoryFunc(func(json.RawMessage) (node.Node, error) { return uiTool{}, nil }))
+	eng, err := engine.New(engine.Config{Source: engine.NewFilesystemSource(dir), Registry: reg, Logger: log.New(io.Discard, "", 0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.LoadAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{
+		"RSASSISTANT_ENABLED": "true", "APP_ID": "APPX", "APP_FUNCTION_ID": "FNX",
+		"NATS_IDENTITY_BASE_PATH": "test.identity", "NATS_IDENTITY_VALIDATE_SUBJECT": "validateInternalToken",
+		"RSASSISTANT_CONSULT_TIMEOUT_SECONDS": "10",
+	}
+	rt, err := rsassistant.Start(context.Background(), rsassistant.Deps{
+		Engine: eng, Logger: log.New(io.Discard, "", 0),
+		LookupEnv: func(k string) (string, bool) { v, ok := env[k]; return v, ok },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Shutdown()
+	cli := agentclient.NewFromConn(nc)
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		if cards, _ := cli.Discover(context.Background(), wire.DiscoverFilter{}, 300*time.Millisecond); len(cards) > 0 {
+			break
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	msg := wire.Message{Role: "user", Content: []wire.ContentBlock{{Text: "resubmit"}}}
+
+	// 1. The caller supports user input: answer the ask on the input subject.
+	run, err := cli.Chat(agentclient.WithIDT(ctx, "good"), "UiSearch", wire.ChatRequest{
+		Message: msg, UserInput: &wire.UserInputSupport{Supported: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var askTitle, closed, stop string
+	for ev := range run.Events {
+		switch {
+		case ev.Type == wire.EventData && ev.Kind == wire.DataKindAsk:
+			var p struct {
+				AskID string  `json:"askId"`
+				Ask   ask.Ask `json:"ask"`
+			}
+			_ = json.Unmarshal(ev.Payload, &p)
+			askTitle = p.Ask.Title
+			if resp, err := run.Answer(ctx, p.AskID, wire.InputActionSubmit, map[string]any{}); err != nil || !resp.Accepted {
+				t.Fatalf("answer: %+v %v", resp, err)
+			}
+		case ev.Type == wire.EventData && ev.Kind == wire.DataKindAskClosed:
+			var p struct {
+				Status string `json:"status"`
+			}
+			_ = json.Unmarshal(ev.Payload, &p)
+			closed = p.Status
+		case ev.Type == wire.EventDone:
+			stop = ev.StopReason
+		case ev.Type == wire.EventError:
+			t.Fatalf("error event: %s", ev.Error)
+		}
+	}
+	if got := <-results; got != `{"approved":true}` {
+		t.Fatalf("workflow got %s", got)
+	}
+	if askTitle != "Resubmit 12 claims?" || closed != "answered" || stop != wire.StopEndTurn {
+		t.Fatalf("ask=%q closed=%q stop=%q", askTitle, closed, stop)
+	}
+
+	// 2. No user input in this request: the tool errors at once.
+	started := time.Now()
+	run, err = cli.Chat(agentclient.WithIDT(ctx, "good"), "UiSearch", wire.ChatRequest{Message: msg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range run.Events {
+	}
+	if got := <-results; got != `{"_error":"can't ask the user here"}` {
+		t.Fatalf("workflow got %s", got)
+	}
+	if time.Since(started) > 3*time.Second {
+		t.Fatalf("no-user-input path must not wait (%s)", time.Since(started))
+	}
 }
