@@ -288,16 +288,16 @@ func TestRuntimeClientUIToolAsksTheUser(t *testing.T) {
 		_ = m.Respond([]byte(`{"valid":true,"functionGranted":true,"userId":"u-1","accountId":"acct-9"}`))
 	})
 
-	// Fake engine: tool_call ConfirmAction, wait for the client result on the
-	// announced subject, then finish.
+	// Fake engine with the real ordering: the session's ToolResultHost
+	// listens from creation; the loop emits tool_call while the model still
+	// streams and only waits for the result later.
 	results := make(chan string, 2)
 	_, _ = nc.Subscribe("test.base.UiSearch", func(m *nats.Msg) {
-		prefix := "test.base._.tool_result." + m.Reply
-		res := make(chan []byte, 1)
-		sub, _ := nc.Subscribe(prefix+".tu1", func(r *nats.Msg) { res <- r.Data })
-		_ = nc.Flush()
+		host := natsstream.NewToolResultHost(nc, "test.base", strconv.FormatInt(time.Now().UnixNano(), 10), log.New(io.Discard, "", 0))
+		_ = host.Listen()
+		prefix := host.Prefix()
 		go func() {
-			defer sub.Unsubscribe()
+			defer host.Stop()
 			seq := 0
 			send := func(typ natsstream.StreamEventType, data string) {
 				out := nats.NewMsg(m.Reply)
@@ -314,11 +314,8 @@ func TestRuntimeClientUIToolAsksTheUser(t *testing.T) {
 			}
 			send(natsstream.StreamStart, `{"sessionId":"s"}`)
 			send(natsstream.StreamToolCall, `{"toolUseId":"tu1","name":"ConfirmAction","input":{"prompt":"Resubmit 12 claims?"}}`)
-			var r []byte
-			select {
-			case r = <-res:
-			case <-time.After(5 * time.Second):
-			}
+			time.Sleep(300 * time.Millisecond) // model still streaming, earlier tools
+			r, _ := host.WaitForToolResult(context.Background(), "tu1", 3*time.Second)
 			results <- string(r)
 			send(natsstream.StreamToolResult, `{"toolUseId":"tu1","output":`+string(r)+`,"isError":false}`)
 			send(natsstream.StreamComplete, `{"finalText":"done","messageStop":"end_turn"}`)

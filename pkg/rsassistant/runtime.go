@@ -38,6 +38,7 @@ type published struct {
 	cfg        Config
 	logger     *log.Logger
 	ui         *uiBridge // client-UI tools answered by asking the user; nil = none
+	sessions   sessionLocks
 }
 
 // Start publishes every eligible workflow as its own nats-agent agent.
@@ -198,6 +199,16 @@ func (p *published) handleChat(ctx context.Context, turn *agent.Turn, stream *ag
 	}
 	if p.ui != nil {
 		req.UI, req.Asker = p.ui, stream
+		// One consult per session: a resume waits for a parked turn's
+		// workflow drain to finish (bounded by the consult timeout).
+		unlock, lerr := p.sessions.acquire(ctx, turn.SessionID, p.cfg.ConsultTimeout)
+		if lerr != nil {
+			if ctx.Err() != nil {
+				return nil // cancelled while waiting; the runtime ends the run
+			}
+			p.logger.Printf("RSASSISTANT event=consult.session_wait name=%s run=%s session=%s err=%q", p.name, turn.RunID, turn.SessionID, lerr.Error())
+		}
+		defer unlock()
 	}
 	n, err := consult(ctx, p.agent.Conn(), req, p.logger, stream)
 	if err != nil {

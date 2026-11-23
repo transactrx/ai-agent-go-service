@@ -19,6 +19,7 @@ type emitter interface {
 	ToolResult(toolUseID, toolName, result, toolErr string)
 	Data(kind string, payload any)
 	Status(text string)
+	Progress(stage, detail string)
 	Done(stopReason string, usage *wire.Usage)
 	Error(message string, code int)
 }
@@ -83,6 +84,7 @@ func (r *relay) apply(ev natsstream.StreamEvent, out emitter) {
 		_ = json.Unmarshal(ev.Data, &p)
 		r.toolNames[p.ToolUseID] = p.Name
 		out.ToolUse(p.ToolUseID, p.Name, p.Input)
+		out.Progress("tool", p.Name) // §12.3; the library rate-limits frames
 	case natsstream.StreamToolResult:
 		var p toolResultPayload
 		_ = json.Unmarshal(ev.Data, &p)

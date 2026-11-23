@@ -96,7 +96,11 @@ func startUIEngine(t *testing.T, nc *nats.Conn, subject string, toolCall string,
 	t.Helper()
 	got := make(chan []byte, 1)
 	_, err := nc.Subscribe(subject, func(m *nats.Msg) {
-		prefix := "test.base._.tool_result.stream-1"
+		// Real ordering: the session's host listens from creation; the loop
+		// waits for the result only after tool_call + the rest of the stream.
+		host := natsstream.NewToolResultHost(nc, "test.base", "stream-1", silent())
+		_ = host.Listen()
+		prefix := host.Prefix()
 		seq := 0
 		send := func(e natsstream.StreamEvent) {
 			out := nats.NewMsg(m.Reply)
@@ -111,21 +115,19 @@ func startUIEngine(t *testing.T, nc *nats.Conn, subject string, toolCall string,
 			out.Data = e.Data
 			_ = nc.PublishMsg(out)
 		}
-		results := make(chan []byte, 1)
-		sub, _ := nc.Subscribe(prefix+".tu1", func(r *nats.Msg) { results <- r.Data })
-		_ = nc.Flush()
 		go func() {
-			defer sub.Unsubscribe()
+			defer host.Stop()
 			send(ev(natsstream.StreamStart, 0, `{"sessionId":"s1"}`))
 			send(ev(natsstream.StreamToolCall, 0, toolCall))
-			select {
-			case r := <-results:
-				got <- r
-				for _, e := range after(r) {
-					send(e)
-				}
-			case <-time.After(5 * time.Second):
+			time.Sleep(200 * time.Millisecond)
+			r, err := host.WaitForToolResult(context.Background(), "tu1", 3*time.Second)
+			if err != nil {
 				got <- nil
+				return
+			}
+			got <- r
+			for _, e := range after(r) {
+				send(e)
 			}
 		}()
 	})
@@ -193,6 +195,16 @@ func TestConsultParkEndsTurnAwaitingInput(t *testing.T) {
 	}
 	if len(f.parked) != 1 || f.parked[0] != "ask_9" {
 		t.Fatalf("parked = %v", f.parked)
+	}
+	// The relayed UI tool chip is closed before Park.
+	var closedChip bool
+	for _, e := range out.evs {
+		if e.kind == "toolResult" && e.a == "tu1" && e.b == "PickOne" && e.c == waitingForAnswer+"|" {
+			closedChip = true
+		}
+	}
+	if !closedChip {
+		t.Fatalf("no tool result for the parked UI tool: %+v", out.evs)
 	}
 	// After Park the turn is over: nothing the workflow says next is relayed.
 	for _, e := range out.evs {
@@ -281,5 +293,50 @@ func TestEngineStreamPause(t *testing.T) {
 	}
 	if err := s.Close(); err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestRelayToolCallEmitsProgress(t *testing.T) {
+	out := &recorder{}
+	newRelay().apply(ev(natsstream.StreamToolCall, 0, `{"toolUseId":"t1","name":"OpenSearchQuery","input":{}}`), out)
+	if len(out.progress) != 1 || out.progress[0] != "tool/OpenSearchQuery" {
+		t.Fatalf("progress = %v", out.progress)
+	}
+}
+
+// A new consult on the same session waits for the previous one (a parked
+// turn's drain); other sessions don't; the wait is bounded.
+func TestSessionLocks(t *testing.T) {
+	var l sessionLocks
+	unlock, err := l.acquire(context.Background(), "s1", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u, err := l.acquire(context.Background(), "s2", 50*time.Millisecond); err != nil {
+		t.Fatalf("other session must not wait: %v", err)
+	} else {
+		u()
+	}
+	if _, err := l.acquire(context.Background(), "s1", 50*time.Millisecond); err == nil {
+		t.Fatal("same session must wait and time out while held")
+	}
+	got := make(chan error, 1)
+	go func() {
+		u, err := l.acquire(context.Background(), "s1", 2*time.Second)
+		if err == nil {
+			u()
+		}
+		got <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	unlock()
+	if err := <-got; err != nil {
+		t.Fatalf("waiter after unlock: %v", err)
+	}
+	l.mu.Lock()
+	n := len(l.m)
+	l.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("locks not released: %d", n)
 	}
 }

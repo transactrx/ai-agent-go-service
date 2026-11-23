@@ -83,10 +83,12 @@ func consult(ctx context.Context, nc *nats.Conn, req consultRequest, logger *log
 			}
 			r.apply(ev, out)
 			if ev.Type == natsstream.StreamToolCall && req.UI != nil && req.Asker != nil {
-				if askedPark := answerClientUI(ctx, req, s, ev, logger); askedPark != "" && !parked {
-					// Park ends the nats-agent turn (askClosed{parked} + done
-					// awaiting_input). The workflow got {"_skipped":true}; let
-					// it finish so its memory keeps the turn, relaying nothing.
+				if askedPark, call := answerClientUI(ctx, req, s, ev, logger); askedPark != "" && !parked {
+					// Close the relayed tool chip, then Park ends the nats-agent
+					// turn (askClosed{parked} + done awaiting_input). The
+					// workflow got {"_skipped":true}; let it finish so its
+					// memory keeps the turn, relaying nothing.
+					out.ToolResult(call.ToolUseID, call.Name, waitingForAnswer, "")
 					req.Asker.Park(askedPark)
 					r.done = true
 					parked = true
@@ -100,23 +102,26 @@ func consult(ctx context.Context, nc *nats.Conn, req consultRequest, logger *log
 	}
 }
 
+// waitingForAnswer is the tool result shown for a UI tool whose ask parked.
+const waitingForAnswer = "waiting for the user's answer"
+
 // answerClientUI answers one client-UI tool call (if it is one) and returns
-// the parked ask id when the live wait ran out.
-func answerClientUI(ctx context.Context, req consultRequest, s *engineStream, ev natsstream.StreamEvent, logger *log.Logger) string {
+// the parked ask id when the live wait ran out, with the call.
+func answerClientUI(ctx context.Context, req consultRequest, s *engineStream, ev natsstream.StreamEvent, logger *log.Logger) (string, toolCallPayload) {
 	var p toolCallPayload
 	if json.Unmarshal(ev.Data, &p) != nil || !req.UI.owns(p.Name) {
-		return ""
+		return "", p
 	}
 	resume := s.Pause() // the user's think time is not workflow time
 	payload, parked, err := req.UI.answer(ctx, req.Asker, p.Name, p.Input)
 	resume()
 	if err != nil {
-		return "" // ctx ended: the select above stops the workflow
+		return "", p // ctx ended: the select above stops the workflow
 	}
 	if perr := s.PublishToolResult(p.ToolUseID, payload); perr != nil {
 		logger.Printf("RSASSISTANT event=ui_tool.publish_failed tool=%s err=%q", p.Name, perr.Error())
 	}
-	return parked
+	return parked, p
 }
 
 // userTimeZone and userName read the turn's display context (already

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/transactrx/nats-agent/pkg/agent"
@@ -136,4 +137,58 @@ func bridgeAskWait(engineWait time.Duration, lookup func(string) (string, bool))
 		wait = time.Second
 	}
 	return wait
+}
+
+// sessionLocks serializes consults per session id.
+type sessionLocks struct {
+	mu sync.Mutex
+	m  map[string]*sessionLock
+}
+
+type sessionLock struct {
+	ch   chan struct{} // holds one token while a consult runs
+	refs int
+}
+
+// acquire waits up to wait (or ctx) for the session. On timeout it returns
+// an error and a no-op unlock: the caller proceeds rather than hang. An
+// empty id is never locked.
+func (l *sessionLocks) acquire(ctx context.Context, id string, wait time.Duration) (func(), error) {
+	if id == "" {
+		return func() {}, nil
+	}
+	l.mu.Lock()
+	if l.m == nil {
+		l.m = map[string]*sessionLock{}
+	}
+	sl := l.m[id]
+	if sl == nil {
+		sl = &sessionLock{ch: make(chan struct{}, 1)}
+		l.m[id] = sl
+	}
+	sl.refs++
+	l.mu.Unlock()
+	release := func() {
+		l.mu.Lock()
+		if sl.refs--; sl.refs == 0 {
+			delete(l.m, id)
+		}
+		l.mu.Unlock()
+	}
+	var timeout <-chan time.Time
+	if wait > 0 {
+		t := time.NewTimer(wait)
+		defer t.Stop()
+		timeout = t.C
+	}
+	select {
+	case sl.ch <- struct{}{}:
+		return func() { <-sl.ch; release() }, nil
+	case <-ctx.Done():
+		release()
+		return func() {}, ctx.Err()
+	case <-timeout:
+		release()
+		return func() {}, errors.New("session busy: previous turn still finishing")
+	}
 }
