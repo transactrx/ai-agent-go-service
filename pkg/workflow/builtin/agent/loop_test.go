@@ -66,9 +66,9 @@ type fakeMem struct {
 	turns []node.Turn
 }
 
-func (fakeMem) Spec() node.NodeSpec                          { return node.NodeSpec{Role: node.RoleMemory} }
-func (fakeMem) Init(_ context.Context, _ node.NodeEnv) error { return nil }
-func (fakeMem) Close(_ context.Context) error                { return nil }
+func (*fakeMem) Spec() node.NodeSpec                          { return node.NodeSpec{Role: node.RoleMemory} }
+func (*fakeMem) Init(_ context.Context, _ node.NodeEnv) error { return nil }
+func (*fakeMem) Close(_ context.Context) error                { return nil }
 func (m *fakeMem) Load(_ context.Context, _ node.MemoryKey) ([]node.Message, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1458,16 +1458,16 @@ func TestAgentThoughtsOffByDefault(t *testing.T) {
 	}
 }
 
-// _error on a client result (RSAssistant bridge: the run can't ask the user)
-// is a surfaced tool error carrying the message.
-func TestAgentClientToolErrorBecomesSurfacedError(t *testing.T) {
+// _error on a PowerLine web client tool's result is a normal result, as at
+// 57c96b6: the _error probe is for run-scoped tools only (runtools.go).
+func TestAgentClientUIToolErrorKeyIsNotAnError(t *testing.T) {
 	clientTool := &fakeClientTool{
 		name: "Confirm",
 		spec: node.ToolSpec{Name: "Confirm", Description: "yes/no", InputSchema: json.RawMessage(`{}`)},
 	}
 	a := &agentNode{
 		cfg:        Config{MaxIterations: 5, SystemMessage: "sys", HumanResponseTimeoutSeconds: 1},
-		env:        &clientResultEnv{resp: map[string][]byte{"tu1": []byte(`{"_error":"can't ask the user here"}`)}},
+		env:        &clientResultEnv{resp: map[string][]byte{"tu1": []byte(`{"_error":"x","_parked":true}`)}},
 		workflowID: "wf",
 		tools:      []node.Tool{clientTool},
 		llm: &fakeLLM{scripts: [][]node.LLMEvent{
@@ -1487,13 +1487,12 @@ func TestAgentClientToolErrorBecomesSurfacedError(t *testing.T) {
 	}
 	var saw bool
 	for _, ev := range sink.events {
-		if ev.Type == node.StreamToolResult && strings.Contains(string(ev.Data), `"isError":true`) &&
-			strings.Contains(string(ev.Data), "can't ask the user here") {
+		if ev.Type == node.StreamToolResult && strings.Contains(string(ev.Data), `"isError":false`) {
 			saw = true
 		}
 	}
-	if !saw {
-		t.Fatalf("expected tool_result error 'can't ask the user here'; events: %+v", sink.events)
+	if !saw || sink.term.Type != node.StreamComplete || !strings.Contains(string(sink.term.Data), "ok") {
+		t.Fatalf("events: %+v term: %+v", sink.events, sink.term)
 	}
 }
 

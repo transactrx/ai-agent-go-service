@@ -42,15 +42,12 @@ func (f *fakeAsker) Park(askID string) {
 
 var _ userAsker = (*agent.Stream)(nil) // the real stream satisfies it
 
-func uiTools() *uiBridge {
-	return newUIBridge(map[string]string{"PickOne": "tool/ui-pick-one", "ConfirmAction": "tool/ui-confirm"})
-}
+const askIn = `{"title":"Which pharmacy?","fields":[{"name":"p","label":"Pharmacy","type":"choice","options":[{"value":"1","label":"One"},{"value":"2","label":"Two"}]}]}`
 
-func TestRelayWithoutUserInputErrors(t *testing.T) {
+func TestAnswerAskWithoutUserInputErrors(t *testing.T) {
 	for _, e := range []error{agent.ErrUnsupported, agent.ErrRunEnded} {
 		f := &fakeAsker{answer: func(ask.Ask) (ask.Answer, error) { return ask.Answer{}, e }}
-		payload, parked, err := uiTools().answer(context.Background(), f, "PickOne",
-			json.RawMessage(`{"prompt":"Which?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]}`))
+		payload, parked, err := answerAsk(context.Background(), f, json.RawMessage(askIn))
 		if err != nil || parked != "" {
 			t.Fatalf("%v: err=%v parked=%q", e, err, parked)
 		}
@@ -60,54 +57,67 @@ func TestRelayWithoutUserInputErrors(t *testing.T) {
 	}
 }
 
-func TestRelayMalformedAskIsToolErrorWithoutCard(t *testing.T) {
+func TestAnswerAskMalformedIsToolErrorWithoutCard(t *testing.T) {
 	f := &fakeAsker{answer: func(ask.Ask) (ask.Answer, error) { t.Fatal("no card for a malformed ask"); return ask.Answer{}, nil }}
-	payload, _, _ := uiTools().answer(context.Background(), f, "PickOne", json.RawMessage(`{"prompt":"Which?","options":[]}`))
-	if !strings.Contains(string(payload), `"_error"`) || !strings.Contains(string(payload), "choice needs options") {
-		t.Fatalf("payload = %s", payload)
+	for _, in := range []string{`{"fields":[]}`, `{"title":"T","bogus":1}`, `not json`, `[1]`} {
+		payload, parked, err := answerAsk(context.Background(), f, json.RawMessage(in))
+		if err != nil || parked != "" || !strings.Contains(string(payload), `"_error"`) {
+			t.Fatalf("%s: payload=%s parked=%q err=%v", in, payload, parked, err)
+		}
 	}
 }
 
-func TestRelaySkipAndParkMapping(t *testing.T) {
-	in := json.RawMessage(`{"prompt":"Which?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]}`)
-	skip := &fakeAsker{answer: func(ask.Ask) (ask.Answer, error) {
-		return ask.Answer{AskID: "ask_1", Status: ask.StatusSkipped}, agent.ErrSkipped
+// Results match RSAssistant's own request_user_input (pkg/orchestrator/asktool.go).
+func TestAnswerAskOutcomes(t *testing.T) {
+	sub := &fakeAsker{answer: func(a ask.Ask) (ask.Answer, error) {
+		return ask.BuildAnswer(a, "ask_1", map[string]any{"p": "2"}), nil
 	}}
-	if p, parked, _ := uiTools().answer(context.Background(), skip, "PickOne", in); string(p) != `{"_skipped":true}` || parked != "" {
+	p, parked, _ := answerAsk(context.Background(), sub, json.RawMessage(askIn))
+	if string(p) != `{"status":"submitted","values":{"p":"2"},"display":{"p":"Two"}}` || parked != "" {
+		t.Fatalf("submit: payload=%s parked=%q", p, parked)
+	}
+	if len(sub.asks) != 1 || sub.asks[0].Title != "Which pharmacy?" {
+		t.Fatalf("asks = %+v", sub.asks)
+	}
+	skip := &fakeAsker{answer: func(ask.Ask) (ask.Answer, error) {
+		return ask.Answer{AskID: "ask_2", Status: ask.StatusSkipped}, agent.ErrSkipped
+	}}
+	if p, parked, _ := answerAsk(context.Background(), skip, json.RawMessage(askIn)); string(p) != `{"status":"skipped"}` || parked != "" {
 		t.Fatalf("skip: payload=%s parked=%q", p, parked)
 	}
-	// Park publishes nothing: the caller cancels the workflow instead.
-	park := &fakeAsker{answer: func(ask.Ask) (ask.Answer, error) { return ask.Answer{AskID: "ask_2"}, agent.ErrParked }}
-	if p, parked, _ := uiTools().answer(context.Background(), park, "PickOne", in); p != nil || parked != "ask_2" {
-		t.Fatalf("park: payload=%s parked=%q", p, parked)
-	}
-	// Superseded: the legacy decline, or the text slot where there is one.
 	sup := &fakeAsker{answer: func(ask.Ask) (ask.Answer, error) {
-		return ask.Answer{AskID: "ask_4", Status: ask.StatusSuperseded, Values: map[string]any{"text": "never mind"}}, agent.ErrSuperseded
+		return ask.Answer{AskID: "ask_3", Status: ask.StatusSuperseded, Values: map[string]any{"text": "never mind"}}, agent.ErrSuperseded
 	}}
-	if p, parked, _ := uiTools().answer(context.Background(), sup, "PickOne", in); string(p) != `{"_skipped":true}` || parked != "" {
+	if p, parked, _ := answerAsk(context.Background(), sup, json.RawMessage(askIn)); string(p) != `{"status":"not_answered","userWrote":"never mind"}` || parked != "" {
 		t.Fatalf("supersede: payload=%s parked=%q", p, parked)
 	}
-	human := newUIBridge(map[string]string{"AskHuman": "tool/ui-human-input"})
-	if p, _, _ := human.answer(context.Background(), sup, "AskHuman", json.RawMessage(`{"prompt":"NPI?"}`)); string(p) != `{"text":"never mind"}` {
-		t.Fatalf("supersede text slot: payload=%s", p)
+	// Park publishes nothing: the caller cancels the workflow instead.
+	park := &fakeAsker{answer: func(ask.Ask) (ask.Answer, error) { return ask.Answer{AskID: "ask_4"}, agent.ErrParked }}
+	if p, parked, _ := answerAsk(context.Background(), park, json.RawMessage(askIn)); p != nil || parked != "ask_4" {
+		t.Fatalf("park: payload=%s parked=%q", p, parked)
 	}
-	// Declining a confirmation is the legacy rejection.
-	conf := &fakeAsker{answer: func(ask.Ask) (ask.Answer, error) {
-		return ask.Answer{AskID: "ask_3", Status: ask.StatusSkipped}, agent.ErrSkipped
-	}}
-	if p, _, _ := uiTools().answer(context.Background(), conf, "ConfirmAction", json.RawMessage(`{"prompt":"Go?"}`)); string(p) != `{"approved":false}` {
-		t.Fatalf("confirm skip: payload=%s", p)
+	busy := &fakeAsker{answer: func(ask.Ask) (ask.Answer, error) { return ask.Answer{}, agent.ErrBusy }}
+	if p, _, _ := answerAsk(context.Background(), busy, json.RawMessage(askIn)); !strings.Contains(string(p), `"_error"`) {
+		t.Fatalf("busy: payload=%s", p)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	gone := &fakeAsker{answer: func(ask.Ask) (ask.Answer, error) { return ask.Answer{}, context.Canceled }}
+	if p, _, err := answerAsk(ctx, gone, json.RawMessage(askIn)); p != nil || err == nil {
+		t.Fatalf("ctx ended: payload=%s err=%v", p, err)
 	}
 }
 
-// uiEngine is a fake workflow engine that runs one client-UI tool call the
-// way the agent loop does: tool_call, wait on the announced tool-result
-// subject, then tool_result + complete (or whatever follows).
-func startUIEngine(t *testing.T, nc *nats.Conn, subject string, toolCall string, after func(result []byte) []natsstream.StreamEvent) chan []byte {
+// startAskEngine is a fake workflow engine that runs one client tool call
+// the way the agent loop does: tool_call, wait on the announced tool-result
+// subject, then tool_result + complete (or whatever follows). It records
+// the request body.
+func startAskEngine(t *testing.T, nc *nats.Conn, subject string, toolCall string, after func(result []byte) []natsstream.StreamEvent) (chan []byte, chan []byte) {
 	t.Helper()
 	got := make(chan []byte, 1)
+	bodies := make(chan []byte, 1)
 	_, err := nc.Subscribe(subject, func(m *nats.Msg) {
+		bodies <- m.Data
 		// Real ordering: the session's host listens from creation; the loop
 		// waits for the result only after tool_call + the rest of the stream.
 		host := natsstream.NewToolResultHost(nc, "test.base", "stream-1", silent())
@@ -132,7 +142,7 @@ func startUIEngine(t *testing.T, nc *nats.Conn, subject string, toolCall string,
 			send(ev(natsstream.StreamStart, 0, `{"sessionId":"s1"}`))
 			send(ev(natsstream.StreamToolCall, 0, toolCall))
 			time.Sleep(200 * time.Millisecond)
-			r, err := host.WaitForToolResult(context.Background(), "tu1", 3*time.Second)
+			r, err := host.WaitForToolResult(context.Background(), "tu1", time.Second)
 			if err != nil {
 				got <- nil
 				return
@@ -146,34 +156,37 @@ func startUIEngine(t *testing.T, nc *nats.Conn, subject string, toolCall string,
 	if err != nil {
 		t.Fatal(err)
 	}
-	return got
+	return got, bodies
 }
 
-func TestConsultAnswersClientUIToolThroughAskUser(t *testing.T) {
+func completeAfter(r []byte) []natsstream.StreamEvent {
+	return []natsstream.StreamEvent{
+		ev(natsstream.StreamToolResult, 0, `{"toolUseId":"tu1","output":`+string(r)+`,"isError":false}`),
+		ev(natsstream.StreamComplete, 0, `{"finalText":"Pharmacy Two.","messageStop":"end_turn"}`),
+	}
+}
+
+func TestConsultAnswersRequestUserInput(t *testing.T) {
 	_, nc := runEmbedded(t)
-	got := startUIEngine(t, nc, "test.base.Ui",
-		`{"toolUseId":"tu1","name":"PickOne","input":{"prompt":"Which pharmacy?","options":[{"value":"1","label":"One"},{"value":"2","label":"Two"}]}}`,
-		func(r []byte) []natsstream.StreamEvent {
-			return []natsstream.StreamEvent{
-				ev(natsstream.StreamToolResult, 0, `{"toolUseId":"tu1","output":`+string(r)+`,"isError":false}`),
-				ev(natsstream.StreamComplete, 0, `{"finalText":"Pharmacy Two.","messageStop":"end_turn"}`),
-			}
-		})
+	got, bodies := startAskEngine(t, nc, "test.base.Ask", `{"toolUseId":"tu1","name":"request_user_input","input":`+askIn+`}`, completeAfter)
 	f := &fakeAsker{answer: func(a ask.Ask) (ask.Answer, error) {
-		return ask.BuildAnswer(a, "ask_1", map[string]any{"value": "2"}), nil
+		return ask.BuildAnswer(a, "ask_1", map[string]any{"p": "2"}), nil
 	}}
 	out := &recorder{}
 	_, err := consult(context.Background(), nc, consultRequest{
-		Subject: "test.base.Ui", AccountID: "a", UserID: "u", Text: "find it", Timeout: 5 * time.Second,
-		UI: uiTools(), Asker: f,
+		Subject: "test.base.Ask", AccountID: "a", UserID: "u", Text: "find it", Timeout: 5 * time.Second,
+		AskUser: true, Asker: f,
 	}, silent(), out)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r := <-got; string(r) != `{"value":"2"}` {
+	if b := <-bodies; !strings.Contains(string(b), `"askUser":true`) {
+		t.Fatalf("body = %s", b)
+	}
+	if r := <-got; string(r) != `{"status":"submitted","values":{"p":"2"},"display":{"p":"Two"}}` {
 		t.Fatalf("engine got tool result %s", r)
 	}
-	if len(f.asks) != 1 || f.asks[0].Title != "Which pharmacy?" || f.asks[0].Fields[0].Type != ask.TypeChoice {
+	if len(f.asks) != 1 {
 		t.Fatalf("asks = %+v", f.asks)
 	}
 	last := out.evs[len(out.evs)-1]
@@ -182,13 +195,174 @@ func TestConsultAnswersClientUIToolThroughAskUser(t *testing.T) {
 	}
 }
 
+// Without AskUser the body is today's (no askUser) and the bridge never
+// answers tool calls: a same-named call is left to the workflow.
+func TestConsultWithoutAskUserUnchanged(t *testing.T) {
+	_, nc := runEmbedded(t)
+	got, bodies := startAskEngine(t, nc, "test.base.NoAsk", `{"toolUseId":"tu1","name":"request_user_input","input":`+askIn+`}`, completeAfter)
+	f := &fakeAsker{answer: func(ask.Ask) (ask.Answer, error) { t.Fatal("must not ask"); return ask.Answer{}, nil }}
+	_, err := consult(context.Background(), nc, consultRequest{
+		Subject: "test.base.NoAsk", AccountID: "a", UserID: "u", Text: "q", Timeout: 5 * time.Second, Asker: f,
+	}, silent(), &recorder{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := <-bodies; string(b) != `{"message":"q","responseMode":"streaming"}` {
+		t.Fatalf("body = %s", b)
+	}
+	if r := <-got; r != nil {
+		t.Fatalf("bridge answered: %s", r)
+	}
+}
+
+// Other tool calls are never answered by the bridge.
+func TestConsultIgnoresOtherToolCalls(t *testing.T) {
+	_, nc := runEmbedded(t)
+	got, _ := startAskEngine(t, nc, "test.base.Other", `{"toolUseId":"tu1","name":"OpenSearchQuery","input":{}}`, completeAfter)
+	f := &fakeAsker{answer: func(ask.Ask) (ask.Answer, error) { t.Fatal("must not ask"); return ask.Answer{}, nil }}
+	_, _ = consult(context.Background(), nc, consultRequest{
+		Subject: "test.base.Other", AccountID: "a", UserID: "u", Text: "q", Timeout: 5 * time.Second, AskUser: true, Asker: f,
+	}, silent(), &recorder{})
+	if r := <-got; r != nil {
+		t.Fatalf("bridge answered: %s", r)
+	}
+}
+
+// parkEngine sends one ask tool call, then reports what it gets: a tool
+// result (published to results; when endOnResult it then ends the stream as
+// the loop does after _parked) or a cancel (cancelled; it then ends the
+// stream as cancelled). It ends on its own after 3s otherwise.
+func parkEngine(t *testing.T, nc *nats.Conn, subject string, endOnResult bool) (results chan []byte, cancelled chan struct{}) {
+	t.Helper()
+	results = make(chan []byte, 4)
+	cancelled = make(chan struct{}, 1)
+	_, err := nc.Subscribe(subject, func(m *nats.Msg) {
+		host := natsstream.NewToolResultHost(nc, "test.base", "stream-1", silent())
+		_ = host.Listen()
+		seq := 0
+		var mu sync.Mutex
+		send := func(e natsstream.StreamEvent) {
+			mu.Lock()
+			defer mu.Unlock()
+			out := nats.NewMsg(m.Reply)
+			out.Header.Set(natsstream.HdrStreamEvent, string(e.Type))
+			out.Header.Set(natsstream.HdrStreamSequence, strconv.Itoa(seq))
+			out.Header.Set(natsstream.HdrStreamId, "stream-1")
+			if seq == 0 {
+				out.Header.Set(natsstream.HdrStreamCancelSubject, "test.cancel."+subject)
+				out.Header.Set(natsstream.HdrStreamToolResultPrefix, host.Prefix())
+			}
+			seq++
+			out.Data = e.Data
+			_ = nc.PublishMsg(out)
+		}
+		cancelSub, _ := nc.SubscribeSync("test.cancel." + subject)
+		go func() {
+			defer host.Stop()
+			defer func() { _ = cancelSub.Unsubscribe() }()
+			send(ev(natsstream.StreamStart, 0, `{"sessionId":"s1"}`))
+			send(ev(natsstream.StreamToolCall, 0, `{"toolUseId":"tu1","name":"request_user_input","input":`+askIn+`}`))
+			go func() {
+				if r, err := host.WaitForToolResult(context.Background(), "tu1", 3*time.Second); err == nil {
+					results <- r
+					if endOnResult {
+						send(ev(natsstream.StreamComplete, 0, `{"finalText":"I asked the user","messageStop":"awaiting_input"}`))
+					}
+				}
+			}()
+			if _, err := cancelSub.NextMsg(3 * time.Second); err != nil {
+				return
+			}
+			cancelled <- struct{}{}
+			send(ev(natsstream.StreamError, 0, `{"code":"cancelled","message":"cancelled"}`))
+		}()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return results, cancelled
+}
+
+// Park: the workflow gets {"_parked":true} (its loop saves the turn and
+// ends), Park ends the nats-agent turn, nothing after is relayed, and no
+// cancel is needed.
 func TestConsultParkEndsTurnAwaitingInput(t *testing.T) {
 	_, nc := runEmbedded(t)
-	// The engine sends one UI tool call, then waits: for a tool result (it
-	// must never get one) or for cancel (it ends the stream as cancelled).
-	toolResults := make(chan []byte, 4)
-	cancelled := make(chan struct{}, 1)
-	_, err := nc.Subscribe("test.base.Ui", func(m *nats.Msg) {
+	results, cancelled := parkEngine(t, nc, "test.base.Park", true)
+	f := &fakeAsker{answer: func(ask.Ask) (ask.Answer, error) { return ask.Answer{AskID: "ask_9"}, agent.ErrParked }}
+	out := &recorder{}
+	start := time.Now()
+	_, err := consult(context.Background(), nc, consultRequest{
+		Subject: "test.base.Park", AccountID: "a", UserID: "u", Text: "find it", Timeout: 5 * time.Second,
+		AskUser: true, Asker: f,
+	}, silent(), out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("consult returned after %s, want right after the workflow ended", d)
+	}
+	select {
+	case r := <-results:
+		if string(r) != `{"_parked":true}` {
+			t.Fatalf("engine got %s", r)
+		}
+	default:
+		t.Fatal("the workflow got no _parked result")
+	}
+	select {
+	case <-cancelled:
+		t.Fatal("cancel sent although the workflow ended by itself")
+	default:
+	}
+	if len(f.parked) != 1 || f.parked[0] != "ask_9" {
+		t.Fatalf("parked = %v", f.parked)
+	}
+	var closedChip bool
+	for _, e := range out.evs {
+		if e.kind == "toolResult" && e.a == "tu1" && e.b == ask.ToolName && e.c == waitingForAnswer+"|" {
+			closedChip = true
+		}
+		if e.kind == "text" || e.kind == "done" || e.kind == "error" {
+			t.Fatalf("event after park relayed: %+v", e)
+		}
+	}
+	if !closedChip {
+		t.Fatalf("no tool result for the parked ask: %+v", out.evs)
+	}
+}
+
+// If the workflow does not end after _parked, the bridge cancels it.
+func TestConsultParkFallsBackToCancel(t *testing.T) {
+	old := parkCancelWait
+	parkCancelWait = 300 * time.Millisecond
+	defer func() { parkCancelWait = old }()
+	_, nc := runEmbedded(t)
+	results, cancelled := parkEngine(t, nc, "test.base.Stuck", false)
+	f := &fakeAsker{answer: func(ask.Ask) (ask.Answer, error) { return ask.Answer{AskID: "ask_8"}, agent.ErrParked }}
+	if _, err := consult(context.Background(), nc, consultRequest{
+		Subject: "test.base.Stuck", AccountID: "a", UserID: "u", Text: "q", Timeout: 5 * time.Second,
+		AskUser: true, Asker: f,
+	}, silent(), &recorder{}); err != nil {
+		t.Fatal(err)
+	}
+	if r := <-results; string(r) != `{"_parked":true}` {
+		t.Fatalf("engine got %s", r)
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stuck workflow was not cancelled")
+	}
+}
+
+// The workflow ends (its request timeout, an error) while the form is open:
+// the ask is ended at once (its ctx cancelled: nats-agent closes the card as
+// parked), nothing is published to the dead run, and the end is relayed.
+func TestConsultEndsAskWhenWorkflowEnds(t *testing.T) {
+	_, nc := runEmbedded(t)
+	results := make(chan []byte, 1)
+	_, _ = nc.Subscribe("test.base.Dies", func(m *nats.Msg) {
 		host := natsstream.NewToolResultHost(nc, "test.base", "stream-1", silent())
 		_ = host.Listen()
 		seq := 0
@@ -198,95 +372,86 @@ func TestConsultParkEndsTurnAwaitingInput(t *testing.T) {
 			out.Header.Set(natsstream.HdrStreamSequence, strconv.Itoa(seq))
 			out.Header.Set(natsstream.HdrStreamId, "stream-1")
 			if seq == 0 {
-				out.Header.Set(natsstream.HdrStreamCancelSubject, "test.cancel.stream-1")
 				out.Header.Set(natsstream.HdrStreamToolResultPrefix, host.Prefix())
 			}
 			seq++
 			out.Data = e.Data
 			_ = nc.PublishMsg(out)
 		}
-		cancelSub, _ := nc.SubscribeSync("test.cancel.stream-1")
 		go func() {
 			defer host.Stop()
-			defer func() { _ = cancelSub.Unsubscribe() }()
 			send(ev(natsstream.StreamStart, 0, `{"sessionId":"s1"}`))
-			send(ev(natsstream.StreamToolCall, 0, `{"toolUseId":"tu1","name":"PickOne","input":{"prompt":"Which pharmacy?","options":[{"value":"1","label":"One"},{"value":"2","label":"Two"}]}}`))
-			go func() {
-				if r, err := host.WaitForToolResult(context.Background(), "tu1", 2*time.Second); err == nil {
-					toolResults <- r
-				}
-			}()
-			if _, err := cancelSub.NextMsg(3 * time.Second); err != nil {
-				return // never cancelled: consult hangs until its timeout
+			send(ev(natsstream.StreamToolCall, 0, `{"toolUseId":"tu1","name":"request_user_input","input":`+askIn+`}`))
+			time.Sleep(200 * time.Millisecond)
+			send(ev(natsstream.StreamError, 0, `{"code":"timeout","message":"request timeout"}`))
+			if r, err := host.WaitForToolResult(context.Background(), "tu1", time.Second); err == nil {
+				results <- r
 			}
-			cancelled <- struct{}{}
-			send(ev(natsstream.StreamError, 0, `{"code":"cancelled","message":"cancelled"}`))
 		}()
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	f := &fakeAsker{answer: func(ask.Ask) (ask.Answer, error) { return ask.Answer{AskID: "ask_9"}, agent.ErrParked }}
+	asked := make(chan struct{})
+	f := &fakeAsker{answer: func(ask.Ask) (ask.Answer, error) { return ask.Answer{}, nil }}
+	blocking := &ctxAsker{fakeAsker: f, opened: asked}
 	out := &recorder{}
 	start := time.Now()
-	_, err = consult(context.Background(), nc, consultRequest{
-		Subject: "test.base.Ui", AccountID: "a", UserID: "u", Text: "find it", Timeout: 5 * time.Second,
-		UI: uiTools(), Asker: f,
-	}, silent(), out)
-	if err != nil {
+	if _, err := consult(context.Background(), nc, consultRequest{
+		Subject: "test.base.Dies", AccountID: "a", UserID: "u", Text: "q", Timeout: 5 * time.Second,
+		AskUser: true, Asker: blocking,
+	}, silent(), out); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-cancelled:
-	default:
-		t.Fatal("the workflow was not cancelled after park")
-	}
 	if d := time.Since(start); d > 2*time.Second {
-		t.Fatalf("consult returned after %s, want right after the cancel", d)
+		t.Fatalf("consult took %s: the open ask was not ended", d)
 	}
-	if len(f.parked) != 1 || f.parked[0] != "ask_9" {
-		t.Fatalf("parked = %v", f.parked)
+	if !blocking.ended {
+		t.Fatal("the ask's ctx was not cancelled")
 	}
-	// The relayed UI tool chip is closed before Park.
-	var closedChip bool
-	for _, e := range out.evs {
-		if e.kind == "toolResult" && e.a == "tu1" && e.b == "PickOne" && e.c == waitingForAnswer+"|" {
-			closedChip = true
-		}
-	}
-	if !closedChip {
-		t.Fatalf("no tool result for the parked UI tool: %+v", out.evs)
-	}
-	// After Park the turn is over: nothing the workflow says next is relayed.
-	for _, e := range out.evs {
-		if e.kind == "text" || e.kind == "done" || e.kind == "error" {
-			t.Fatalf("event after park relayed: %+v", e)
-		}
-	}
-	// No tool result ever reached the engine: the loop runs no further tool.
 	select {
-	case r := <-toolResults:
-		t.Fatalf("engine got a tool result after park: %s", r)
-	case <-time.After(2500 * time.Millisecond):
+	case r := <-results:
+		t.Fatalf("published to the ended run: %s", r)
+	case <-time.After(1200 * time.Millisecond):
+	}
+	last := out.evs[len(out.evs)-1]
+	if last.kind != "error" {
+		t.Fatalf("last event = %+v", last)
+	}
+	if len(f.parked) != 0 {
+		t.Fatalf("Park called for an ended run: %v", f.parked)
 	}
 }
 
-func TestEligibleWorkflowWithUITools(t *testing.T) {
+// ctxAsker blocks until its ctx ends, like AskUser with no answer.
+type ctxAsker struct {
+	*fakeAsker
+	opened chan struct{}
+	ended  bool
+}
+
+func (c *ctxAsker) AskUser(ctx context.Context, a ask.Ask) (ask.Answer, error) {
+	close(c.opened)
+	<-ctx.Done()
+	c.ended = true
+	return ask.Answer{AskID: "ask_7"}, ctx.Err()
+}
+
+// The live wait is capped by the agent's client-tool wait and by the
+// trigger's request timeout.
+func TestAskWaitCap(t *testing.T) {
+	wf := wfWith(fakeChatTrigger{mode: "streaming"}, map[string]node.Node{"os": plainNode{}})
+	if got := engineWait(wf, fakeChatTrigger{mode: "streaming"}); got != time.Minute {
+		t.Fatalf("cap = %s, want the trigger's 1m", got)
+	}
+}
+
+// Rule 3 is back: a workflow with a client-only UI tool is not published.
+func TestUIToolWorkflowNotEligible(t *testing.T) {
 	pick, err := clientui.PickOneFactory.New(json.RawMessage(`{"toolName":"PickOne","toolDescription":"d"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	wf := wfWith(fakeChatTrigger{mode: "streaming"}, map[string]node.Node{"os": plainNode{}, "uiPickOne1": pick})
-	ep, reason := Eligibility(wf)
-	if reason != "" || ep == nil {
-		t.Fatalf("UI-tool workflow must be eligible, got reason=%q", reason)
-	}
-	tools := ClientUITools(wf)
-	if len(tools) != 1 || tools["PickOne"] != "tool/ui-pick-one" {
-		t.Fatalf("ClientUITools = %v", tools)
-	}
-	if got := ClientUITools(wfWith(fakeChatTrigger{mode: "streaming"}, map[string]node.Node{"os": plainNode{}})); len(got) != 0 {
-		t.Fatalf("plain workflow has no UI tools, got %v", got)
+	_, reason := Eligibility(wfWith(fakeChatTrigger{mode: "streaming"}, map[string]node.Node{"os": plainNode{}, "uiPickOne1": pick}))
+	if !strings.Contains(reason, "uiPickOne1") {
+		t.Fatalf("reason = %q", reason)
 	}
 }
 
@@ -482,5 +647,20 @@ func TestSessionKeyNoCollisions(t *testing.T) {
 			u()
 		}
 		unlock()
+	}
+}
+
+// askUser is turned off when the workflow already has a request_user_input
+// tool: its loop would call that tool, not the bridge.
+func TestHasTool(t *testing.T) {
+	pick, err := clientui.PickOneFactory.New(json.RawMessage(`{"toolName":"request_user_input","toolDescription":"d"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasTool(wfWith(fakeChatTrigger{mode: "streaming"}, map[string]node.Node{"t": pick}), ask.ToolName) {
+		t.Fatal("tool not found")
+	}
+	if hasTool(wfWith(fakeChatTrigger{mode: "streaming"}, map[string]node.Node{"os": plainNode{}}), ask.ToolName) {
+		t.Fatal("plain workflow has no such tool")
 	}
 }

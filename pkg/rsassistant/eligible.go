@@ -2,10 +2,10 @@ package rsassistant
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/natschat"
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/engine"
-	"github.com/transactrx/ai-agent-go-service/pkg/workflow/node"
 )
 
 // ModeStreaming is the trigger/nats-chat responseMode the bridge requires.
@@ -17,17 +17,12 @@ const ModeStreaming = "streaming"
 // (builtin/agent/loop.go: `tool.(node.ClientUITool); ok && cu.ClientOnly()`).
 type clientOnlyMarker interface{ ClientOnly() bool }
 
-// toolSpecer is the tool half of a client-UI node: the name the model calls.
-type toolSpecer interface{ ToolSpec() node.ToolSpec }
-
 // Eligibility decides whether a loaded workflow can be published to RSAssistant.
 // It returns the chat endpoint and an empty reason when eligible, or a
 // human-readable reason otherwise. Rules (spec §3.2):
 //  1. trigger implements natschat.ChatEndpoint
 //  2. responseMode is streaming, or the body may override it to streaming
-//  3. client-only UI tools no longer exclude it: they are answered through
-//     nats-agent "ask the user" and the agent is published with userInput
-//     (see ClientUITools)
+//  3. no node is a client-only UI tool (RSAssistant cannot answer them)
 func Eligibility(wf *engine.Workflow) (natschat.ChatEndpoint, string) {
 	if wf == nil || wf.Trigger == nil {
 		return nil, "workflow has no trigger"
@@ -39,24 +34,15 @@ func Eligibility(wf *engine.Workflow) (natschat.ChatEndpoint, string) {
 	if ep.ResponseMode() != ModeStreaming && !ep.AllowsResponseModeOverride() {
 		return nil, fmt.Sprintf("cannot stream: responseMode=%q and allowResponseModeOverride=false", ep.ResponseMode())
 	}
+	ids := make([]string, 0, len(wf.Nodes))
+	for id := range wf.Nodes {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids) // deterministic reason
+	for _, id := range ids {
+		if cu, ok := wf.Nodes[id].(clientOnlyMarker); ok && cu.ClientOnly() {
+			return nil, fmt.Sprintf("has client-only UI tool node %q (%s)", id, wf.Nodes[id].Spec().Type)
+		}
+	}
 	return ep, ""
-}
-
-// ClientUITools lists the workflow's client-only UI tools as tool name ->
-// node type. Non-empty means the agent is published with userInput.
-func ClientUITools(wf *engine.Workflow) map[string]string {
-	out := map[string]string{}
-	if wf == nil {
-		return out
-	}
-	for _, n := range wf.Nodes {
-		cu, ok := n.(clientOnlyMarker)
-		if !ok || !cu.ClientOnly() {
-			continue
-		}
-		if ts, ok := n.(toolSpecer); ok && ts.ToolSpec().Name != "" {
-			out[ts.ToolSpec().Name] = n.Spec().Type
-		}
-	}
-	return out
 }

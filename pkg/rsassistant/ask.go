@@ -11,17 +11,16 @@ import (
 	"github.com/transactrx/nats-agent/pkg/agent"
 	"github.com/transactrx/nats-agent/pkg/ask"
 	"github.com/transactrx/nats-agent/pkg/wire"
-
-	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/clientui"
 )
 
-// Client-UI tools over nats-agent 1.7 "ask the user" (spec §10).
+// request_user_input over nats-agent 1.7 "ask the user" (spec §10).
 //
-// The workflow runs exactly as it does for PowerLine's Webix chat: the agent
-// loop emits tool_call and waits on the stream's tool-result subject. Where
-// the Webix widget would render and publish the result, the bridge asks the
-// RSAssistant user (Stream.AskUser) and publishes the answer in the legacy
-// shape. The engine, the loop's wait and the Webix path are untouched.
+// For an askUser agent whose caller can show forms, the consult asks the
+// workflow run to offer request_user_input to its agent loop as a client-only
+// tool. The loop emits tool_call and waits on the stream's tool-result
+// subject, exactly as for PowerLine's web UI tools; the bridge asks the
+// RSAssistant user (Stream.AskUser) and publishes the result. The results
+// match RSAssistant's own request_user_input (pkg/orchestrator/asktool.go).
 
 // cantAsk is the tool error when the run cannot ask the user.
 const cantAsk = "can't ask the user here"
@@ -41,57 +40,36 @@ type userAsker interface {
 	Park(askID string)
 }
 
-// uiBridge knows a workflow's client-UI tools: tool name -> node type.
-type uiBridge struct{ tools map[string]string }
-
-func newUIBridge(tools map[string]string) *uiBridge {
-	if len(tools) == 0 {
-		return nil
-	}
-	return &uiBridge{tools: tools}
-}
-
-func (b *uiBridge) owns(name string) bool {
-	if b == nil {
-		return false
-	}
-	_, ok := b.tools[name]
-	return ok
-}
-
-// answer asks the user for one client-UI tool call and returns the payload
-// to publish as the tool result. parked is the ask id when the live wait ran
-// out: payload is then nil (nothing to publish); the caller ends the turn
-// with Park and cancels the workflow (Ruling 17: no hidden drain; the
-// resume gives the model the answer as context). err is set only when ctx
-// ended (nothing to publish; the run is going away).
-func (b *uiBridge) answer(ctx context.Context, u userAsker, name string, input json.RawMessage) (payload []byte, parked string, err error) {
+// answerAsk asks the user for one request_user_input call and returns the
+// payload to publish as the tool result. parked is the ask id when the live
+// wait ran out: payload is then nil (nothing to publish); the caller ends
+// the turn with Park and cancels the workflow (Ruling 17: no hidden drain;
+// the resume gives the model the answer as context). err is set only when
+// ctx ended (nothing to publish; the run is going away).
+func answerAsk(ctx context.Context, u userAsker, input json.RawMessage) (payload []byte, parked string, err error) {
 	var in map[string]any
-	if len(input) > 0 {
-		if jerr := json.Unmarshal(input, &in); jerr != nil {
-			return toolError("invalid input: " + jerr.Error()), "", nil
-		}
+	if jerr := json.Unmarshal(input, &in); jerr != nil || in == nil {
+		return toolError("invalid ask: not a JSON object"), "", nil
 	}
-	a, back, terr := clientui.Translate(b.tools[name], in)
-	if terr == nil {
-		terr = ask.CheckAsk(a) // AskUser checks too; no card for a bad ask
-	}
-	if terr != nil {
-		return toolError(terr.Error()), "", nil
+	a, perr := ask.ParseAsk(in) // checks too: no card for a bad ask
+	if perr != nil {
+		return toolError(perr.Error()), "", nil
 	}
 	ans, aerr := u.AskUser(ctx, a)
 	switch {
 	case aerr == nil:
-		return mustJSON(back(ans)), "", nil
+		return []byte(ans.ToolResult()), "", nil
 	case errors.Is(aerr, agent.ErrSkipped):
-		return mustJSON(back(ask.Answer{AskID: ans.AskID, Status: ask.StatusSkipped})), "", nil
+		return []byte(ask.Answer{AskID: ans.AskID, Status: ask.StatusSkipped}.ToolResult()), "", nil
 	case errors.Is(aerr, agent.ErrParked):
 		return nil, ans.AskID, nil
 	case errors.Is(aerr, agent.ErrSuperseded):
-		// The user wrote instead of answering (InterruptAsk, or a relayed
-		// supersede): the tool's text slot, else the loop's "declined" path.
+		// The user wrote instead of answering: their text as context.
 		text, _ := ans.Values["text"].(string)
-		return mustJSON(clientui.SupersededResult(b.tools[name], text)), "", nil
+		return mustJSON(struct {
+			Status    string `json:"status"`
+			UserWrote string `json:"userWrote"`
+		}{"not_answered", text}), "", nil
 	case errors.Is(aerr, agent.ErrUnsupported), errors.Is(aerr, agent.ErrRunEnded):
 		return toolError(cantAsk), "", nil
 	case ctx.Err() != nil:

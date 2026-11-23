@@ -144,7 +144,7 @@ func (a *agentNode) Init(_ context.Context, env node.NodeEnv) error {
 
 func (a *agentNode) Close(_ context.Context) error { return nil }
 
-// HumanResponseTimeout is how long the loop waits for a client-UI tool
+// HumanResponseTimeout is how long the loop waits for a client-only tool
 // result (humanResponseTimeoutSeconds, default 5m).
 func (a *agentNode) HumanResponseTimeout() time.Duration {
 	if a.cfg.HumanResponseTimeoutSeconds > 0 {

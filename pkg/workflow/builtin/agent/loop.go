@@ -154,6 +154,11 @@ func (a *agentNode) Process(ctx context.Context, in node.AgentInput, sink node.S
 	for _, t := range a.tools {
 		toolSpecs = append(toolSpecs, t.ToolSpec())
 	}
+	// Run-scoped client-only tools (none unless the trigger set them).
+	runTools := a.runTools(ctx)
+	for _, t := range runTools {
+		toolSpecs = append(toolSpecs, t.ToolSpec())
+	}
 
 	// 5. Iteration loop.
 	emptyAnswerRetries := 0
@@ -415,7 +420,7 @@ func (a *agentNode) Process(ctx context.Context, in node.AgentInput, sink node.S
 		// Invoke each tool, build tool_result blocks.
 		toolResults := make([]node.ContentBlock, 0, len(toolCalls))
 		for _, tc := range toolCalls {
-			tool := a.lookupTool(tc.Name)
+			tool := findTool(a.lookupTool(tc.Name), runTools, tc.Name)
 			if tool == nil {
 				toolResults = append(toolResults, node.ContentBlock{
 					Type: node.BlockToolResult, ToolUseID: tc.ID,
@@ -482,16 +487,20 @@ func (a *agentNode) Process(ctx context.Context, in node.AgentInput, sink node.S
 					// Convert to a surfaced tool error so the LLM treats it like
 					// any other failure and recovers (rephrase/default/move on).
 					var probe struct {
-						Skipped bool   `json:"_skipped"`
-						Error   string `json:"_error"`
+						Skipped bool `json:"_skipped"`
 					}
 					_ = json.Unmarshal(out, &probe)
 					if probe.Skipped {
 						err = errors.New("user declined to answer")
-					} else if probe.Error != "" {
-						// _error: the client could not ask (RSAssistant bridge:
-						// no user input in this run, or a malformed ask).
-						err = errors.New(probe.Error)
+					} else if rt, ok := tool.(runClientTool); ok {
+						// Run tools only (RSAssistant bridge): _error and _parked.
+						rp := probeRunResult(out)
+						if rp.parked {
+							return a.completeStream(ctx, sink, in, userMsg, parkedNote(rt, tc.InputJSON), stopAwaitingInput)
+						}
+						if rp.err != "" {
+							err = errors.New(rp.err)
+						}
 					}
 				}
 			} else {

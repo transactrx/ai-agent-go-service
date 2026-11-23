@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,6 +30,13 @@ import (
 // chatTrigger: node.Trigger + natschat.ChatEndpoint (subject fixed for the test).
 type chatTrigger struct {
 	subject string
+	askUser *atomic.Bool // set by EnableAskUser
+}
+
+func (c chatTrigger) EnableAskUser() {
+	if c.askUser != nil {
+		c.askUser.Store(true)
+	}
 }
 
 func (chatTrigger) Spec() node.NodeSpec {
@@ -56,10 +65,8 @@ func (sinkAgent) Process(_ context.Context, _ node.AgentInput, sink node.StreamS
 	return sink.Close(context.Background(), node.StreamEvent{Type: node.StreamComplete, Data: []byte(`{"finalText":"ok"}`)})
 }
 
-// uiTool: a client-only UI tool, so one workflow is published with userInput.
+// uiTool: client-only marker so one workflow is ineligible.
 type uiTool struct{ sinkAgent }
-
-func (uiTool) ToolSpec() node.ToolSpec { return node.ToolSpec{Name: "ConfirmAction"} }
 
 func (uiTool) Spec() node.NodeSpec {
 	return node.NodeSpec{Type: "tool/ui-confirm", Role: node.RoleTool,
@@ -130,7 +137,7 @@ func TestRuntimePublishesEligibleWorkflowsAndBridgesVerifiedIdentity(t *testing.
 		}
 	})
 
-	// Engine with two workflows: plain (manifest name) and one with a UI tool.
+	// Engine with two workflows: eligible (manifest name) and ineligible (UI tool).
 	dir := t.TempDir()
 	write := func(name, content string) {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
@@ -140,7 +147,10 @@ func TestRuntimePublishesEligibleWorkflowsAndBridgesVerifiedIdentity(t *testing.
 	write("single.json", fmt.Sprintf(wfJSON, "SingleSearch", `"rsassistant": {"name": "claimSearch", "description": "Claims Q&A"},`, "test/agent"))
 	write("ui.json", fmt.Sprintf(wfJSON, "UiSearch", "", "test/ui"))
 	reg := node.NewRegistry()
-	_ = reg.Register("test/chat-trigger", node.FactoryFunc(func(json.RawMessage) (node.Node, error) { return chatTrigger{subject: "test.base.SingleSearch"}, nil }))
+	singleAskUser := &atomic.Bool{}
+	_ = reg.Register("test/chat-trigger", node.FactoryFunc(func(json.RawMessage) (node.Node, error) {
+		return chatTrigger{subject: "test.base.SingleSearch", askUser: singleAskUser}, nil
+	}))
 	_ = reg.Register("test/agent", node.FactoryFunc(func(json.RawMessage) (node.Node, error) { return sinkAgent{}, nil }))
 	_ = reg.Register("test/ui", node.FactoryFunc(func(json.RawMessage) (node.Node, error) { return uiTool{}, nil }))
 	eng, err := engine.New(engine.Config{Source: engine.NewFilesystemSource(dir), Registry: reg, Logger: log.New(io.Discard, "", 0)})
@@ -167,8 +177,8 @@ func TestRuntimePublishesEligibleWorkflowsAndBridgesVerifiedIdentity(t *testing.
 		t.Fatal(err)
 	}
 	defer rt.Shutdown()
-	if names := rt.Names(); len(names) != 2 || names[0] != "claimSearch" || names[1] != "UiSearch" {
-		t.Fatalf("published = %v, want [claimSearch UiSearch]", names)
+	if names := rt.Names(); len(names) != 1 || names[0] != "claimSearch" {
+		t.Fatalf("published = %v, want [claimSearch]", names)
 	}
 
 	cli := agentclient.NewFromConn(nc)
@@ -182,35 +192,27 @@ func TestRuntimePublishesEligibleWorkflowsAndBridgesVerifiedIdentity(t *testing.
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(cards) > 1 {
+		if len(cards) > 0 {
 			break
 		}
 	}
-	// The UI-tool workflow asks the user: userInput with progress and renew
-	// (RSAssistant requires all three). The plain one is unchanged.
-	byName := map[string]wire.AgentCard{}
-	for _, c := range cards {
-		byName[c.Name] = c
-	}
-	if c := byName["UiSearch"].Capabilities; !c.UserInput || !c.Progress || !c.Renew {
-		t.Fatalf("UiSearch capabilities = %+v", c)
-	}
-	if c := byName["claimSearch"].Capabilities; c.UserInput || c.Progress || c.Renew {
-		t.Fatalf("claimSearch capabilities = %+v", c)
-	}
-	cards = []wire.AgentCard{byName["claimSearch"]}
-	if cards[0].Name != "claimSearch" || cards[0].Access == nil ||
+	if len(cards) != 1 || cards[0].Name != "claimSearch" || cards[0].Access == nil ||
 		cards[0].Access.AppID != "APPX" || cards[0].Access.FunctionID != "FNX" || cards[0].Description != "Claims Q&A" {
 		t.Fatalf("cards = %+v", cards)
+	}
+	// No askUser in the manifest: the card is as before (no 1.7 capabilities).
+	if c := cards[0].Capabilities; c.UserInput || c.Progress || c.Renew {
+		t.Fatalf("capabilities = %+v", c)
 	}
 
 	// Consult with a good token: identity headers must be the verified ones, not the spoofed userId.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	run, err := cli.Chat(agentclient.WithIDT(ctx, "good"), "claimSearch", wire.ChatRequest{
-		UserID:  "spoofed-user",
-		Message: wire.Message{Role: "user", Content: []wire.ContentBlock{{Text: "how many?"}}},
-		Context: &wire.UserContext{TimeZone: "America/Chicago", UserName: "Jane\nDoe"},
+		UserID:    "spoofed-user",
+		Message:   wire.Message{Role: "user", Content: []wire.ContentBlock{{Text: "how many?"}}},
+		Context:   &wire.UserContext{TimeZone: "America/Chicago", UserName: "Jane\nDoe"},
+		UserInput: &wire.UserInputSupport{Supported: true}, // ignored: not an askUser agent
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -240,6 +242,11 @@ func TestRuntimePublishesEligibleWorkflowsAndBridgesVerifiedIdentity(t *testing.
 	if !cards[0].Capabilities.UserContext {
 		t.Fatal("published card must advertise userContext")
 	}
+	// Not an askUser agent: the consult body is as before and the trigger
+	// was never enabled for askUser.
+	if b := string(seen[0].Data); strings.Contains(b, "askUser") || singleAskUser.Load() {
+		t.Fatalf("body = %s enabled = %t", b, singleAskUser.Load())
+	}
 	mu.Unlock()
 
 	// Consult with a bad token: rejected before the engine is ever called.
@@ -267,11 +274,12 @@ func headersOf(msgs []*nats.Msg) []nats.Header {
 	return out
 }
 
-// End to end through a real nats-agent 1.7 agent: a workflow's client-UI
-// tool call becomes an ask the caller answers on the run's input subject,
-// and the workflow receives the legacy result. A caller without user input
-// gets the tool error at once.
-func TestRuntimeClientUIToolAsksTheUser(t *testing.T) {
+// End to end through a real nats-agent 1.7 agent with rsassistant.askUser:
+// a caller that can show forms gets request_user_input offered to the
+// workflow (askUser in the body) and answers the ask on the input subject;
+// the workflow receives the answer as its tool result. A caller without
+// user input gets today's consult: no askUser, no tool.
+func TestRuntimeAskUserOptIn(t *testing.T) {
 	opts := natstest.DefaultTestOptions
 	opts.Port = -1
 	srv := natstest.RunServer(&opts)
@@ -288,11 +296,14 @@ func TestRuntimeClientUIToolAsksTheUser(t *testing.T) {
 		_ = m.Respond([]byte(`{"valid":true,"functionGranted":true,"userId":"u-1","accountId":"acct-9"}`))
 	})
 
-	// Fake engine with the real ordering: the session's ToolResultHost
-	// listens from creation; the loop emits tool_call while the model still
-	// streams and only waits for the result later.
+	// Fake engine: offers request_user_input only when the body asks for it
+	// (as natschat does), with the real ordering (host listens from creation).
 	results := make(chan string, 2)
-	_, _ = nc.Subscribe("test.base.UiSearch", func(m *nats.Msg) {
+	_, _ = nc.Subscribe("test.base.AskSearch", func(m *nats.Msg) {
+		var body struct {
+			AskUser bool `json:"askUser"`
+		}
+		_ = json.Unmarshal(m.Data, &body)
 		host := natsstream.NewToolResultHost(nc, "test.base", strconv.FormatInt(time.Now().UnixNano(), 10), log.New(io.Discard, "", 0))
 		_ = host.Listen()
 		prefix := host.Prefix()
@@ -313,8 +324,13 @@ func TestRuntimeClientUIToolAsksTheUser(t *testing.T) {
 				_ = nc.PublishMsg(out)
 			}
 			send(natsstream.StreamStart, `{"sessionId":"s"}`)
-			send(natsstream.StreamToolCall, `{"toolUseId":"tu1","name":"ConfirmAction","input":{"prompt":"Resubmit 12 claims?"}}`)
-			time.Sleep(300 * time.Millisecond) // model still streaming, earlier tools
+			if !body.AskUser {
+				results <- "no tool"
+				send(natsstream.StreamComplete, `{"finalText":"done","messageStop":"end_turn"}`)
+				return
+			}
+			send(natsstream.StreamToolCall, `{"toolUseId":"tu1","name":"request_user_input","input":{"title":"Resubmit 12 claims?","mode":"confirm"}}`)
+			time.Sleep(300 * time.Millisecond) // model still streaming
 			r, _ := host.WaitForToolResult(context.Background(), "tu1", 3*time.Second)
 			results <- string(r)
 			send(natsstream.StreamToolResult, `{"toolUseId":"tu1","output":`+string(r)+`,"isError":false}`)
@@ -323,12 +339,15 @@ func TestRuntimeClientUIToolAsksTheUser(t *testing.T) {
 	})
 
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "ui.json"), []byte(fmt.Sprintf(wfJSON, "UiSearch", "", "test/ui")), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "ask.json"), []byte(fmt.Sprintf(wfJSON, "AskSearch", `"rsassistant": {"askUser": true},`, "test/agent")), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	reg := node.NewRegistry()
-	_ = reg.Register("test/chat-trigger", node.FactoryFunc(func(json.RawMessage) (node.Node, error) { return chatTrigger{subject: "test.base.UiSearch"}, nil }))
-	_ = reg.Register("test/ui", node.FactoryFunc(func(json.RawMessage) (node.Node, error) { return uiTool{}, nil }))
+	askEnabled := &atomic.Bool{}
+	_ = reg.Register("test/chat-trigger", node.FactoryFunc(func(json.RawMessage) (node.Node, error) {
+		return chatTrigger{subject: "test.base.AskSearch", askUser: askEnabled}, nil
+	}))
+	_ = reg.Register("test/agent", node.FactoryFunc(func(json.RawMessage) (node.Node, error) { return sinkAgent{}, nil }))
 	eng, err := engine.New(engine.Config{Source: engine.NewFilesystemSource(dir), Registry: reg, Logger: log.New(io.Discard, "", 0)})
 	if err != nil {
 		t.Fatal(err)
@@ -350,17 +369,27 @@ func TestRuntimeClientUIToolAsksTheUser(t *testing.T) {
 	}
 	defer rt.Shutdown()
 	cli := agentclient.NewFromConn(nc)
+	var cards []wire.AgentCard
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
-		if cards, _ := cli.Discover(context.Background(), wire.DiscoverFilter{}, 300*time.Millisecond); len(cards) > 0 {
+		if cards, _ = cli.Discover(context.Background(), wire.DiscoverFilter{}, 300*time.Millisecond); len(cards) > 0 {
 			break
 		}
+	}
+	if len(cards) != 1 {
+		t.Fatalf("cards = %+v", cards)
+	}
+	if c := cards[0].Capabilities; !c.UserInput || !c.Progress || !c.Renew {
+		t.Fatalf("askUser capabilities = %+v", c)
+	}
+	if !askEnabled.Load() {
+		t.Fatal("the askUser workflow's trigger was not enabled")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	msg := wire.Message{Role: "user", Content: []wire.ContentBlock{{Text: "resubmit"}}}
 
 	// 1. The caller supports user input: answer the ask on the input subject.
-	run, err := cli.Chat(agentclient.WithIDT(ctx, "good"), "UiSearch", wire.ChatRequest{
+	run, err := cli.Chat(agentclient.WithIDT(ctx, "good"), "AskSearch", wire.ChatRequest{
 		Message: msg, UserInput: &wire.UserInputSupport{Supported: true},
 	})
 	if err != nil {
@@ -391,25 +420,21 @@ func TestRuntimeClientUIToolAsksTheUser(t *testing.T) {
 			t.Fatalf("error event: %s", ev.Error)
 		}
 	}
-	if got := <-results; got != `{"approved":true}` {
+	if got := <-results; got != `{"status":"submitted"}` {
 		t.Fatalf("workflow got %s", got)
 	}
 	if askTitle != "Resubmit 12 claims?" || closed != "answered" || stop != wire.StopEndTurn {
 		t.Fatalf("ask=%q closed=%q stop=%q", askTitle, closed, stop)
 	}
 
-	// 2. No user input in this request: the tool errors at once.
-	started := time.Now()
-	run, err = cli.Chat(agentclient.WithIDT(ctx, "good"), "UiSearch", wire.ChatRequest{Message: msg})
+	// 2. No user input in this request: the tool is not offered at all.
+	run, err = cli.Chat(agentclient.WithIDT(ctx, "good"), "AskSearch", wire.ChatRequest{Message: msg})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for range run.Events {
 	}
-	if got := <-results; got != `{"_error":"can't ask the user here"}` {
+	if got := <-results; got != "no tool" {
 		t.Fatalf("workflow got %s", got)
-	}
-	if time.Since(started) > 3*time.Second {
-		t.Fatalf("no-user-input path must not wait (%s)", time.Since(started))
 	}
 }

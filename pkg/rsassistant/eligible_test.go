@@ -83,13 +83,13 @@ func TestEligibilitySingleWithoutOverride(t *testing.T) {
 	}
 }
 
-func TestEligibilityIncludesClientOnlyUITool(t *testing.T) {
+func TestEligibilityRejectsClientOnlyUITool(t *testing.T) {
 	_, reason := Eligibility(wfWith(fakeChatTrigger{mode: "streaming"}, map[string]node.Node{
 		"os":       plainNode{},
 		"confirm1": uiNode{clientOnly: true},
 	}))
-	if reason != "" {
-		t.Fatalf("UI tools are answered by asking the user now, got %q", reason)
+	if !strings.Contains(reason, "confirm1") {
+		t.Fatalf("reason must name the UI node, got %q", reason)
 	}
 }
 

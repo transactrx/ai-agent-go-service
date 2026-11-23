@@ -10,10 +10,12 @@ import (
 	"time"
 
 	"github.com/transactrx/nats-agent/pkg/agent"
+	"github.com/transactrx/nats-agent/pkg/ask"
 	"github.com/transactrx/nats-agent/pkg/wire"
 
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/natschat"
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/engine"
+	"github.com/transactrx/ai-agent-go-service/pkg/workflow/node"
 )
 
 // Deps is what Start needs from the hosting service.
@@ -37,7 +39,7 @@ type published struct {
 	agent      *agent.Agent
 	cfg        Config
 	logger     *log.Logger
-	ui         *uiBridge // client-UI tools answered by asking the user; nil = none
+	askUser    bool // manifest rsassistant.askUser (and no tool of that name)
 	sessions   sessionLocks
 }
 
@@ -98,15 +100,26 @@ func Start(ctx context.Context, deps Deps) (*Runtime, error) {
 		}
 
 		p := &published{name: spec.Name, workflowID: id, endpoint: ep, cfg: cfg, logger: deps.Logger,
-			ui: newUIBridge(ClientUITools(wf))}
-		// A workflow with client-UI tools asks the user through RSAssistant
-		// (protocol 1.7). RSAssistant offers user input only to agents that
-		// also advertise progress and renew, so the three go together. These
-		// workflows were not published before, so no existing agent changes.
-		withUI := p.ui != nil
+			askUser: spec.AskUser}
+		enabler, canEnable := ep.(askUserEnabler)
+		switch {
+		case !p.askUser:
+		case hasTool(wf, ask.ToolName):
+			// The loop would call the workflow's own tool, not the bridge.
+			deps.Logger.Printf("RSASSISTANT event=ask_user.off workflow=%s reason=%q", id, "workflow has a tool named "+ask.ToolName)
+			p.askUser = false
+		case !canEnable:
+			deps.Logger.Printf("RSASSISTANT event=ask_user.off workflow=%s reason=%q", id, "trigger can't offer "+ask.ToolName)
+			p.askUser = false
+		}
+		// askUser (opt-in) asks the user through RSAssistant (protocol 1.7).
+		// RSAssistant offers user input only to agents that also advertise
+		// progress and renew, so the three go together. Without it the
+		// agent is published exactly as before.
+		withUI := p.askUser
 		var askWait time.Duration
 		if withUI {
-			askWait = bridgeAskWait(engineWait(wf), deps.LookupEnv)
+			askWait = bridgeAskWait(engineWait(wf, ep), deps.LookupEnv)
 		}
 		a, err := agent.New(agent.Config{
 			Name:          spec.Name,
@@ -147,6 +160,10 @@ func Start(ctx context.Context, deps Deps) (*Runtime, error) {
 			_ = a.Shutdown() // release the connection agent.New opened
 			deps.Logger.Printf("RSASSISTANT event=workflow.skipped workflow=%s reason=%q", id, "agent.Start: "+err.Error())
 			continue
+		}
+		if p.askUser {
+			// Only now does the workflow's trigger honor askUser requests.
+			enabler.EnableAskUser()
 		}
 		seenNames[spec.Name] = id
 		rt.agents = append(rt.agents, p)
@@ -201,8 +218,10 @@ func (p *published) handleChat(ctx context.Context, turn *agent.Turn, stream *ag
 		TimeZone:  userTimeZone(turn.Context),
 		UserName:  userName(turn.Context),
 	}
-	if p.ui != nil {
-		req.UI, req.Asker = p.ui, stream
+	if p.askUser {
+		// request_user_input is offered only when this caller can show forms.
+		req.AskUser = turn.UserInput != nil && turn.UserInput.Supported
+		req.Asker = stream
 		// One consult per session: a resume waits for a parked turn's
 		// workflow drain to finish (bounded by the consult timeout).
 		unlock, lerr := p.sessions.acquire(ctx, sessionKey(turn.Identity, turn.SessionID),
@@ -229,9 +248,23 @@ func (p *published) handleChat(ctx context.Context, turn *agent.Turn, stream *ag
 	return nil
 }
 
-// engineWait is the shortest client-UI result wait among the workflow's
-// agent nodes (default 5m).
-func engineWait(wf *engine.Workflow) time.Duration {
+// hasTool reports whether a workflow node offers a tool named name.
+func hasTool(wf *engine.Workflow, name string) bool {
+	for _, n := range wf.Nodes {
+		if t, ok := n.(interface{ ToolSpec() node.ToolSpec }); ok && t.ToolSpec().Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// askUserEnabler is natschat's opt-in switch for askUser requests.
+type askUserEnabler interface{ EnableAskUser() }
+
+// engineWait bounds how long the workflow can wait for a client tool result:
+// the shortest wait among its agent nodes (default 5m) and the trigger's
+// request timeout (the run's whole deadline).
+func engineWait(wf *engine.Workflow, ep natschat.ChatEndpoint) time.Duration {
 	wait := defaultEngineWait
 	for _, n := range wf.Nodes {
 		if h, ok := n.(interface{ HumanResponseTimeout() time.Duration }); ok {
@@ -239,6 +272,9 @@ func engineWait(wf *engine.Workflow) time.Duration {
 				wait = d
 			}
 		}
+	}
+	if d := ep.RequestTimeout(); d > 0 && d < wait {
+		wait = d
 	}
 	return wait
 }
