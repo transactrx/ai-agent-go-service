@@ -228,6 +228,7 @@ func (t *natsChatTrigger) handleStreaming(msg *nats_service.NatsMessage, body ch
 		Done:       sess.Context().Done(),
 	}
 
+	t.logAskUser(msg.MessageId, body)
 	go func() {
 		ctx, cancel := context.WithTimeout(sess.Context(), t.requestTimeout)
 		defer cancel()

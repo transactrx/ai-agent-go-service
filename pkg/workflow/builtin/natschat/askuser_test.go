@@ -3,6 +3,7 @@ package natschat
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"strings"
 	"testing"
 
@@ -142,5 +143,25 @@ func TestHandleNonBoolAskUserNotEnabled(t *testing.T) {
 		if strings.Contains(strings.ToLower(body), "askuser") {
 			t.Fatalf("%s: body = %s", in, body)
 		}
+	}
+}
+
+// An enabled endpoint logs whether each streaming run got the tool; other
+// endpoints log nothing new.
+func TestAskUserOfferLog(t *testing.T) {
+	var buf strings.Builder
+	tr := newTestTrigger(t, `{"responseMode":"streaming"}`)
+	tr.logger = log.New(&buf, "", 0)
+	tr.workflowID = "wf1"
+	tr.logAskUser("req1", chatRequestBody{AskUser: true})
+	if buf.Len() != 0 {
+		t.Fatalf("non-enabled endpoint logged: %q", buf.String())
+	}
+	tr.EnableAskUser()
+	tr.logAskUser("req1", chatRequestBody{AskUser: true})
+	tr.logAskUser("req2", chatRequestBody{})
+	want := "NATSCHAT event=ask_user workflow=wf1 request=req1 offered=true\nNATSCHAT event=ask_user workflow=wf1 request=req2 offered=false\n"
+	if buf.String() != want {
+		t.Fatalf("log = %q", buf.String())
 	}
 }

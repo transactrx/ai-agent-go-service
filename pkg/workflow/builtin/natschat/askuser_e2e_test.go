@@ -3,6 +3,7 @@ package natschat_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -73,10 +74,13 @@ func (l *e2eLLM) takeTools() [][]string {
 	return out
 }
 
+// e2eWorkflow takes the trigger's mode config: plain streaming, or the
+// production shape (single + allowResponseModeOverride, the bridge asks for
+// streaming in the body).
 const e2eWorkflow = `{
   "id": "AskWf", "version": 1, "trigger": "trig",
   "nodes": [
-    {"id": "trig",  "type": "trigger/nats-chat", "config": {"subject": "AskWf", "responseMode": "streaming", "requestTimeoutSeconds": 20}},
+    {"id": "trig",  "type": "trigger/nats-chat", "config": {"subject": "AskWf", %s, "requestTimeoutSeconds": 20}},
     {"id": "agent", "type": "ai/agent", "config": {"systemMessage": "sys", "humanResponseTimeoutSeconds": 5}},
     {"id": "llm",   "type": "test/llm", "config": {}}
   ],
@@ -139,6 +143,13 @@ func run(t *testing.T, nc *nats.Conn, subject, body string, answer string) (call
 // loop only on an enabled endpoint for a request with askUser; its call
 // takes the client path (tool_call, result on the tool-result subject).
 func TestAskUserReachesAgentLoop(t *testing.T) {
+	t.Run("streaming", func(t *testing.T) { askUserReachesAgentLoop(t, `"responseMode": "streaming"`, "") })
+	t.Run("override", func(t *testing.T) {
+		askUserReachesAgentLoop(t, `"responseMode": "single", "allowResponseModeOverride": true`, `"responseMode":"streaming",`)
+	})
+}
+
+func askUserReachesAgentLoop(t *testing.T, modeCfg, modeBody string) {
 	opts := natstest.DefaultTestOptions
 	opts.Port = -1
 	srv := natstest.RunServer(&opts)
@@ -160,7 +171,7 @@ func TestAskUserReachesAgentLoop(t *testing.T) {
 	_ = reg.Register("ai/agent", agent.Factory)
 	_ = reg.Register("test/llm", node.FactoryFunc(func(json.RawMessage) (node.Node, error) { return llm, nil }))
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "wf.json"), []byte(e2eWorkflow), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "wf.json"), []byte(fmt.Sprintf(e2eWorkflow, modeCfg)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	eng, err := engine.New(engine.Config{
@@ -180,8 +191,8 @@ func TestAskUserReachesAgentLoop(t *testing.T) {
 	ep := wf.Trigger.(natschat.ChatEndpoint)
 	subject := ep.ChatSubject()
 
-	const ask = `{"message":"q","askUser":true}`
-	const plain = `{"message":"q"}`
+	ask := `{` + modeBody + `"message":"q","askUser":true}`
+	plain := `{` + modeBody + `"message":"q"}`
 	none := func(name string) {
 		t.Helper()
 		for _, tools := range llm.takeTools() {

@@ -81,3 +81,12 @@ func stripAskUser(raw []byte) []byte {
 	}
 	return out
 }
+
+// logAskUser records, on enabled endpoints only, whether a streaming run was
+// offered request_user_input (diagnostics; other endpoints log nothing new).
+func (t *natsChatTrigger) logAskUser(requestID string, body chatRequestBody) {
+	if !t.askUserEnabled.Load() || t.logger == nil {
+		return
+	}
+	t.logger.Printf("NATSCHAT event=ask_user workflow=%s request=%s offered=%t", t.workflowID, requestID, body.AskUser)
+}

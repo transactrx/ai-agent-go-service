@@ -221,6 +221,7 @@ func (p *published) handleChat(ctx context.Context, turn *agent.Turn, stream *ag
 	if p.askUser {
 		// request_user_input is offered only when this caller can show forms.
 		req.AskUser = turn.UserInput != nil && turn.UserInput.Supported
+		p.logger.Printf("RSASSISTANT event=consult.ask_user name=%s run=%s offered=%t", p.name, turn.RunID, req.AskUser)
 		req.Asker = stream
 		// One consult per session: a resume waits for a parked turn's
 		// workflow drain to finish (bounded by the consult timeout).
