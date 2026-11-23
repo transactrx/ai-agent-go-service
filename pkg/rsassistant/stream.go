@@ -38,8 +38,13 @@ type engineStream struct {
 
 	nextSeq    atomic.Int64
 	cancelSubj atomic.Pointer[string]
-	err        atomic.Pointer[error]
-	logger     *log.Logger
+	toolPrefix atomic.Pointer[string] // tool-result subject prefix (start event)
+
+	timerMu  sync.Mutex // guards timer + deadline (Pause)
+	timer    *time.Timer
+	deadline time.Time
+	err      atomic.Pointer[error]
+	logger   *log.Logger
 }
 
 // errorEvent is what engineStream synthesizes for a non-stream reply. Its
@@ -75,12 +80,31 @@ func openEngineStream(nc *nats.Conn, subject string, headers map[string]string, 
 		return nil, fmt.Errorf("rsassistant: publish request: %w", err)
 	}
 	if timeout > 0 {
-		time.AfterFunc(timeout, func() {
+		s.deadline = time.Now().Add(timeout)
+		s.timer = time.AfterFunc(timeout, func() {
 			s.setErr(fmt.Errorf("timed out after %s", timeout))
 			s.close()
 		})
 	}
 	return s, nil
+}
+
+// Pause stops the consult timeout while the bridge waits for the user (the
+// workflow is idle meanwhile) and returns the func that restarts it with the
+// time that was left. No-op when the timeout already fired.
+func (s *engineStream) Pause() (resume func()) {
+	s.timerMu.Lock()
+	defer s.timerMu.Unlock()
+	if s.timer == nil || !s.timer.Stop() {
+		return func() {}
+	}
+	left := time.Until(s.deadline)
+	return func() {
+		s.timerMu.Lock()
+		defer s.timerMu.Unlock()
+		s.deadline = time.Now().Add(left)
+		s.timer.Reset(left)
+	}
 }
 
 func (s *engineStream) onMsg(m *nats.Msg) {
@@ -110,6 +134,8 @@ func (s *engineStream) onMsg(m *nats.Msg) {
 	if ev.Sequence == 0 {
 		cs := m.Header.Get(natsstream.HdrStreamCancelSubject)
 		s.cancelSubj.Store(&cs)
+		tp := m.Header.Get(natsstream.HdrStreamToolResultPrefix)
+		s.toolPrefix.Store(&tp)
 	}
 	s.deliver(ev)
 	if ev.Type == natsstream.StreamComplete || ev.Type == natsstream.StreamError {
@@ -159,6 +185,16 @@ func (s *engineStream) Cancel() error {
 		return errors.New("cancel subject not known yet (no start event)")
 	}
 	return s.nc.Publish(*p, []byte("cancel"))
+}
+
+// PublishToolResult answers a client-side tool call the workflow is waiting
+// on, exactly as the Webix client does (natsstream.ToolResultHost).
+func (s *engineStream) PublishToolResult(toolUseID string, payload []byte) error {
+	p := s.toolPrefix.Load()
+	if p == nil || *p == "" {
+		return errors.New("tool-result subject not known (no start event)")
+	}
+	return s.nc.Publish(*p+"."+toolUseID, payload)
 }
 
 // Close releases the stream and returns the timeout error, if any.

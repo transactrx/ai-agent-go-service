@@ -35,6 +35,10 @@ type Manifest struct {
 	Version     string   `json:"version,omitempty"`
 	Tags        []string `json:"tags,omitempty"`
 	Skills      []Skill  `json:"skills,omitempty"`
+	// AskUser opts the agent into nats-agent "ask the user" (protocol 1.7):
+	// userInput, progress and renew on the card, and request_user_input
+	// offered to the workflow's model on turns whose caller can show forms.
+	AskUser bool `json:"askUser,omitempty"`
 }
 
 // CardSpec is the resolved, validated description of one published agent.
@@ -46,6 +50,7 @@ type CardSpec struct {
 	Version     string
 	Tags        []string
 	Skills      []Skill
+	AskUser     bool
 }
 
 // ParseManifest decodes the raw block. nil or empty yields the zero Manifest.
@@ -78,6 +83,7 @@ func BuildCardSpec(workflowID, workflowDescription string, raw json.RawMessage, 
 		Version:     strings.TrimSpace(m.Version),
 		Tags:        m.Tags,
 		Skills:      m.Skills,
+		AskUser:     m.AskUser,
 	}
 	if spec.Name == "" {
 		spec.Name = workflowID

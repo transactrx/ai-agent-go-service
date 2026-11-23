@@ -92,3 +92,17 @@ func TestBuildCardSpecCategory(t *testing.T) {
 		t.Fatalf("absent Category = %q", spec.Category)
 	}
 }
+
+func TestBuildCardSpecAskUser(t *testing.T) {
+	spec, err := BuildCardSpec("wf", "d", nil, "1.0.0")
+	if err != nil || spec.AskUser {
+		t.Fatalf("askUser must default false: %+v %v", spec, err)
+	}
+	spec, err = BuildCardSpec("wf", "d", json.RawMessage(`{"askUser":true}`), "1.0.0")
+	if err != nil || !spec.AskUser {
+		t.Fatalf("askUser=true not honored: %+v %v", spec, err)
+	}
+	if _, err := ParseManifest(json.RawMessage(`{"askUser":"yes"}`)); err == nil {
+		t.Fatal("askUser must be a bool")
+	}
+}

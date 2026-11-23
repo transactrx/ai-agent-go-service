@@ -26,7 +26,8 @@ Skipped workflows are logged: `RSASSISTANT event=workflow.skipped workflow=<id> 
   "category": "Claims",
   "version": "1.0.0",
   "tags": ["powerline", "claims"],
-  "skills": [{"name": "claim-search", "description": "Search and aggregate claims", "examples": ["How many claims were rejected today?"]}]
+  "skills": [{"name": "claim-search", "description": "Search and aggregate claims", "examples": ["How many claims were rejected today?"]}],
+  "askUser": false
 }
 ```
 
@@ -37,6 +38,66 @@ description, `displayName` = name, `version` = `RSASSISTANT_AGENT_VERSION` or
 inherited by every workflow that `extends` it; the derived file may override
 fields or set `"enabled": false`. Duplicate names: first workflow id (sorted)
 wins, others are skipped.
+
+## Asking the user (`rsassistant.askUser`, opt-in)
+
+`askUser: true` lets the workflow's model ask the RSAssistant user with the
+standard `request_user_input` tool (nats-agent protocol 1.7, `pkg/ask`). It is
+separate from PowerLine's web UI tools (`tool/ui-*`), which stay web-only
+(rule 3 above).
+
+**Before opting in, update the workflow's own prompt.** The library never
+rewrites a workflow's instructions. A prompt that forbids follow-up questions
+(e.g. "There is no UI … never wait for user input") makes the model refuse the
+offered tool. In the same change that sets `askUser: true`, allow it, e.g.:
+"If request_user_input is available, use it when the request is ambiguous;
+otherwise state the interpretation you chose and answer."
+
+- Card: `capabilities.userInput`, `progress` and `renew` (RSAssistant needs all
+  three). Without `askUser` the card is exactly as before.
+- Per turn: only when the caller sent `userInput.supported` (RSAssistant web
+  turns) does the bridge set `"askUser": true` on the workflow request. Only a
+  `trigger/nats-chat` endpoint that RSAssistant enabled at startup (an
+  `askUser: true` workflow) honors it: its streaming path then offers
+  `request_user_input` (name, description + `ask.Guidance`, input schema) to
+  the run's agent loop as a client-only tool. Only the exact key `askUser` with
+  the value `true` counts; any other value is ignored (never a 400). Every
+  other endpoint ignores the flag and strips every case variant of the key
+  (`askUser`, `AskUser`, `ASKUSER`, ...) from the body before the run, so
+  nothing changes for it. On an enabled endpoint the key stays in the body, so
+  templates that render the whole trigger body see `"askUser": true`.
+  A workflow that already has a tool named `request_user_input` keeps it and
+  gets no `askUser` (`event=ask_user.off`).
+- The bridge answers each call: `ask.ParseAsk` → `Stream.AskUser`; results as
+  RSAssistant's own tool: the answer JSON, `{"status":"skipped"}`,
+  `{"status":"not_answered","userWrote":"..."}` when the user typed instead;
+  "can't ask the user here" or a malformed ask is a tool error.
+- Live wait: `AGENT_ASK_WAIT` (default 5m), capped 10s below the shorter of the
+  agent node's `humanResponseTimeoutSeconds` and the trigger's
+  `requestTimeoutSeconds`. The request timeout also counts the run's work before
+  the ask, so give it room for the expected think time. If the workflow run
+  ends anyway while a form is open (timeout, error), the bridge ends the ask at
+  once (the card closes as parked), publishes nothing to the ended run and
+  relays the run's end.
+- No answer within the live wait: the ask parks and the turn ends
+  `awaiting_input`. The workflow gets `{"_parked":true}`: its agent loop saves
+  the turn (the user's request plus "I asked the user: <title>. Waiting for
+  their answer.") to its memory and ends at once, running nothing more. If it
+  doesn't end within 30s, the bridge cancels it. On the next turn the answer
+  arrives as context (`[Earlier you asked the user: …]`); with memory the model
+  also has the original request. A workflow without a memory node keeps no
+  history, so it gets the answer without the original request.
+- `askUser` on a direct request to an enabled endpoint is not authenticated; it
+  only offers the fixed tool, whose result comes from that same caller's stream.
+
+Known limits:
+- If the workflow run fails while a form is open (request timeout, error), the
+  card is closed as parked but the workflow wrote nothing to memory. Answering
+  it later starts a turn whose model sees the answer without the request that
+  led to the ask. Rare: needs a run failure mid-ask.
+- The session drain lock that makes a resume wait for a parked run is per
+  process. A resume that lands on another replica within milliseconds of the
+  park could load memory before the parked turn is saved.
 
 ## Identity
 
@@ -97,7 +158,7 @@ receive other agents' traffic. A newly published workflow name needs its own ent
 
 ## Logs
 
-- `RSASSISTANT event=agent.published workflow= name= subject= mode= observe_only=`
+- `RSASSISTANT event=agent.published workflow= name= subject= mode= observe_only= function= user_input=`
 - `RSASSISTANT event=workflow.skipped workflow= reason=`
 - `RSASSISTANT event=consult.start|refused|done|error name= run= ...`
 - nats-agent: `IDT_METRIC event=validate.allow|deny|observe ...`
