@@ -61,8 +61,10 @@ func (b *uiBridge) owns(name string) bool {
 
 // answer asks the user for one client-UI tool call and returns the payload
 // to publish as the tool result. parked is the ask id when the live wait ran
-// out: the caller publishes the payload, then ends the turn with Park. err
-// is set only when ctx ended (nothing to publish; the run is going away).
+// out: payload is then nil (nothing to publish); the caller ends the turn
+// with Park and cancels the workflow (Ruling 17: no hidden drain; the
+// resume gives the model the answer as context). err is set only when ctx
+// ended (nothing to publish; the run is going away).
 func (b *uiBridge) answer(ctx context.Context, u userAsker, name string, input json.RawMessage) (payload []byte, parked string, err error) {
 	var in map[string]any
 	if len(input) > 0 {
@@ -84,10 +86,12 @@ func (b *uiBridge) answer(ctx context.Context, u userAsker, name string, input j
 	case errors.Is(aerr, agent.ErrSkipped):
 		return mustJSON(back(ask.Answer{AskID: ans.AskID, Status: ask.StatusSkipped})), "", nil
 	case errors.Is(aerr, agent.ErrParked):
-		return mustJSON(map[string]any{"_skipped": true}), ans.AskID, nil
+		return nil, ans.AskID, nil
 	case errors.Is(aerr, agent.ErrSuperseded):
-		// The user wrote instead of answering: the loop's "declined" path.
-		return mustJSON(map[string]any{"_skipped": true}), "", nil
+		// The user wrote instead of answering (InterruptAsk, or a relayed
+		// supersede): the tool's text slot, else the loop's "declined" path.
+		text, _ := ans.Values["text"].(string)
+		return mustJSON(clientui.SupersededResult(b.tools[name], text)), "", nil
 	case errors.Is(aerr, agent.ErrUnsupported), errors.Is(aerr, agent.ErrRunEnded):
 		return toolError(cantAsk), "", nil
 	case ctx.Err() != nil:

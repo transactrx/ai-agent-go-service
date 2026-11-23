@@ -122,8 +122,12 @@ func Start(ctx context.Context, deps Deps) (*Runtime, error) {
 			UserContext:   true, // workflows render userName/userTimeZone/nowLocal
 			UserInput:     withUI,
 			Progress:      withUI,
-			Renew:         withUI,
-			AskWait:       askWait,
+			// Renew: renewed IDTs are accepted (the run stays alive) and
+			// ignored: the workflow checks the IDT only at trigger entry
+			// (the consult request) and never forwards it, so nothing
+			// later in the consult needs the fresh token.
+			Renew:   withUI,
+			AskWait: askWait,
 			IDTValidation: &agent.IDTValidation{
 				Enabled:     true,
 				ObserveOnly: cfg.ObserveOnly,

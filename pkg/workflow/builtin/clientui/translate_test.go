@@ -256,3 +256,43 @@ func jsonEqual(t *testing.T, a, b string) bool {
 	}
 	return reflect.DeepEqual(x, y)
 }
+
+// An empty prompt gets a default title so the ask passes CheckAsk.
+func TestTranslateEmptyPromptDefaultsTitle(t *testing.T) {
+	for _, c := range []struct{ nodeType, input, want string }{
+		{"tool/ui-confirm", `{}`, "Please confirm"},
+		{"tool/ui-confirm", `{"prompt":"   "}`, "Please confirm"},
+		{"tool/ui-human-input", `{}`, "A few details"},
+		{"tool/ui-pick-one", `{"options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]}`, "A few details"},
+	} {
+		var in map[string]any
+		_ = json.Unmarshal([]byte(c.input), &in)
+		a, _, err := clientui.Translate(c.nodeType, in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if a.Title != c.want {
+			t.Fatalf("%s %s: title = %q, want %q", c.nodeType, c.input, a.Title, c.want)
+		}
+		if err := ask.CheckAsk(a); err != nil {
+			t.Fatalf("%s: CheckAsk: %v", c.nodeType, err)
+		}
+	}
+}
+
+// A superseded ask (the user wrote instead of answering) maps to the text
+// slot where the tool has one, the legacy decline otherwise.
+func TestSupersededResult(t *testing.T) {
+	for _, c := range []struct{ nodeType, want string }{
+		{"tool/ui-human-input", `{"text":"use last week"}`},
+		{"tool/ui-ask-long-text", `{"text":"use last week"}`},
+		{"tool/ui-confirm", `{"approved":false}`},
+		{"tool/ui-pick-one", `{"_skipped":true}`},
+		{"tool/ui-ask-form", `{"_skipped":true}`},
+	} {
+		got, _ := json.Marshal(clientui.SupersededResult(c.nodeType, "use last week"))
+		if string(got) != c.want {
+			t.Fatalf("%s: %s, want %s", c.nodeType, got, c.want)
+		}
+	}
+}

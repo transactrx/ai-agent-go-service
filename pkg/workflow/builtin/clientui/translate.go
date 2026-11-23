@@ -31,8 +31,8 @@ func Translate(nodeType string, input map[string]any) (ask.Ask, func(ask.Answer)
 	if err != nil {
 		return ask.Ask{}, nil, err
 	}
-	setTitle(&a, str(input, "prompt"))
 	confirm := nodeType == "tool/ui-confirm"
+	setTitle(&a, str(input, "prompt"), confirm)
 	back := func(ans ask.Answer) map[string]any {
 		if ans.Status != ask.StatusSubmitted && !confirm {
 			return map[string]any{"_skipped": true}
@@ -40,6 +40,21 @@ func Translate(nodeType string, input map[string]any) (ask.Ask, func(ask.Answer)
 		return from(ans)
 	}
 	return a, back, nil
+}
+
+// SupersededResult is the legacy result for a client-UI ask the user
+// superseded (wrote a message instead of answering): the user's text in the
+// tool's text slot (ui-human-input, ui-ask-long-text), {"approved":false}
+// for a confirmation, else {"_skipped":true} (the loop's "user declined"
+// path). The model sees the message itself in the next turn either way.
+func SupersededResult(nodeType, text string) map[string]any {
+	switch nodeType {
+	case "tool/ui-human-input", "tool/ui-ask-long-text":
+		return map[string]any{"text": text}
+	case "tool/ui-confirm":
+		return map[string]any{"approved": false}
+	}
+	return map[string]any{"_skipped": true}
 }
 
 type translator func(input map[string]any) (ask.Ask, func(ask.Answer) map[string]any, error)
@@ -58,10 +73,24 @@ var translators = map[string]translator{
 
 var noOther = func() *bool { b := false; return &b }
 
+// Default titles for a call without a prompt (an ask needs a title).
+const (
+	defaultConfirmTitle = "Please confirm"
+	defaultTitle        = "A few details"
+)
+
 // setTitle puts the prompt in the title; a prompt over the title limit goes
-// whole into the description (cut to its limit) under a shortened title.
-func setTitle(a *ask.Ask, prompt string) {
+// whole into the description (cut to its limit) under a shortened title. No
+// prompt: a default title.
+func setTitle(a *ask.Ask, prompt string, confirm bool) {
 	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		a.Title = defaultTitle
+		if confirm {
+			a.Title = defaultConfirmTitle
+		}
+		return
+	}
 	if utf8.RuneCountInString(prompt) <= ask.MaxTitle {
 		a.Title = prompt
 		return

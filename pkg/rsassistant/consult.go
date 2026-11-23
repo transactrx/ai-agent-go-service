@@ -61,7 +61,6 @@ func consult(ctx context.Context, nc *nats.Conn, req consultRequest, logger *log
 		return 0, err
 	}
 	r := newRelay()
-	parked := false // the turn ended awaiting input; drain the workflow
 	events := s.Events()
 	for {
 		select {
@@ -74,27 +73,25 @@ func consult(ctx context.Context, nc *nats.Conn, req consultRequest, logger *log
 			return r.count(), nil // nats-agent emits done/cancelled itself
 		case ev, ok := <-events:
 			if !ok {
-				if parked {
-					_ = s.Close()
-					return r.count(), nil
-				}
 				r.finish(s.Close(), out)
 				return r.count(), nil
 			}
 			r.apply(ev, out)
 			if ev.Type == natsstream.StreamToolCall && req.UI != nil && req.Asker != nil {
-				if askedPark, call := answerClientUI(ctx, req, s, ev, logger); askedPark != "" && !parked {
+				if askedPark, call := answerClientUI(ctx, req, s, ev, logger); askedPark != "" {
 					// Close the relayed tool chip, then Park ends the nats-agent
-					// turn (askClosed{parked} + done awaiting_input). The
-					// workflow got {"_skipped":true}; let it finish so its
-					// memory keeps the turn, relaying nothing.
+					// turn (askClosed{parked} + done awaiting_input), then stop
+					// the workflow: it never sees a result for this call and
+					// runs nothing more (Ruling 17). The resume turn gives
+					// the model the answer as context (withInputs).
 					out.ToolResult(call.ToolUseID, call.Name, waitingForAnswer, "")
 					req.Asker.Park(askedPark)
 					r.done = true
-					parked = true
+					cancelParked(ctx, s, call, req.Subject, logger)
+					return r.count(), nil
 				}
 			}
-			if r.terminated() && !parked {
+			if r.terminated() {
 				_ = s.Close()
 				return r.count(), nil
 			}
@@ -104,6 +101,40 @@ func consult(ctx context.Context, nc *nats.Conn, req consultRequest, logger *log
 
 // waitingForAnswer is the tool result shown for a UI tool whose ask parked.
 const waitingForAnswer = "waiting for the user's answer"
+
+// parkCancelWait bounds how long a parked consult waits for the cancelled
+// workflow's stream to end before it lets go (and frees the session lock).
+var parkCancelWait = 30 * time.Second
+
+// cancelParked stops the workflow after a park and returns once the stream
+// ended (the engine confirms the cancel by ending it), ctx ended, or
+// parkCancelWait passed; nothing it sends is relayed. If the cancel cannot
+// be sent, the call gets {"_skipped":true} instead so the loop does not
+// hang on it, and the stream is drained (unrelayed) the same way.
+func cancelParked(ctx context.Context, s *engineStream, call toolCallPayload, subject string, logger *log.Logger) {
+	defer func() { _ = s.Close() }()
+	if err := s.Cancel(); err != nil {
+		logger.Printf("RSASSISTANT event=consult.park_cancel_failed subject=%s err=%q", subject, err.Error())
+		if perr := s.PublishToolResult(call.ToolUseID, mustJSON(map[string]any{"_skipped": true})); perr != nil {
+			logger.Printf("RSASSISTANT event=ui_tool.publish_failed tool=%s err=%q", call.Name, perr.Error())
+		}
+	}
+	timer := time.NewTimer(parkCancelWait)
+	defer timer.Stop()
+	for {
+		select {
+		case _, ok := <-s.Events():
+			if !ok {
+				return
+			}
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			logger.Printf("RSASSISTANT event=consult.park_cancel_timeout subject=%s", subject)
+			return
+		}
+	}
+}
 
 // answerClientUI answers one client-UI tool call (if it is one) and returns
 // the parked ask id when the live wait ran out, with the call.
@@ -117,6 +148,9 @@ func answerClientUI(ctx context.Context, req consultRequest, s *engineStream, ev
 	resume()
 	if err != nil {
 		return "", p // ctx ended: the select above stops the workflow
+	}
+	if parked != "" {
+		return parked, p // nothing to publish: the caller cancels the workflow
 	}
 	if perr := s.PublishToolResult(p.ToolUseID, payload); perr != nil {
 		logger.Printf("RSASSISTANT event=ui_tool.publish_failed tool=%s err=%q", p.Name, perr.Error())
