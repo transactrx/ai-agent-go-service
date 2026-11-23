@@ -10,6 +10,7 @@ import (
 
 	"github.com/transactrx/nats-agent/pkg/agent"
 	"github.com/transactrx/nats-agent/pkg/ask"
+	"github.com/transactrx/nats-agent/pkg/wire"
 
 	"github.com/transactrx/ai-agent-go-service/pkg/workflow/builtin/clientui"
 )
@@ -139,7 +140,7 @@ func bridgeAskWait(engineWait time.Duration, lookup func(string) (string, bool))
 	return wait
 }
 
-// sessionLocks serializes consults per session id.
+// sessionLocks serializes consults per key (see sessionKey).
 type sessionLocks struct {
 	mu sync.Mutex
 	m  map[string]*sessionLock
@@ -150,30 +151,62 @@ type sessionLock struct {
 	refs int
 }
 
-// acquire waits up to wait (or ctx) for the session. On timeout it returns
-// an error and a no-op unlock: the caller proceeds rather than hang. An
-// empty id is never locked.
-func (l *sessionLocks) acquire(ctx context.Context, id string, wait time.Duration) (func(), error) {
-	if id == "" {
+// lockWaitTick is how often onWait runs while a consult waits for the lock.
+const lockWaitTick = 10 * time.Second
+
+// sessionKey scopes the drain lock to the caller's identity (account and
+// user from the turn's identity: the verified one, or the turn's UserID when
+// unverified, as gate accepts it) plus the session id, so one caller can't
+// hold up another's consult by reusing its session id. "" = no lock.
+func sessionKey(id agent.Identity, sessionID string) string {
+	if sessionID == "" {
+		return ""
+	}
+	return id.AccountID + "|" + id.UserID + "/" + sessionID
+}
+
+// lockWait bounds the wait for the lock: the consult timeout, and at most
+// half of the caller's remaining budget so wait + consult fits in it.
+func lockWait(consultTimeout time.Duration, b *wire.Budget) time.Duration {
+	wait := consultTimeout
+	if b != nil && b.RemainingMs > 0 {
+		if half := time.Duration(b.RemainingMs) * time.Millisecond / 2; wait <= 0 || half < wait {
+			wait = half
+		}
+	}
+	return wait
+}
+
+// acquire waits up to wait (or ctx) for key. While it waits, onWait (if set)
+// runs at once and then every lockWaitTick, so the caller can show the run
+// is alive. On timeout it returns an error and a no-op unlock: the caller
+// proceeds rather than hang. An empty key is never locked.
+func (l *sessionLocks) acquire(ctx context.Context, key string, wait time.Duration, onWait func()) (func(), error) {
+	if key == "" {
 		return func() {}, nil
 	}
 	l.mu.Lock()
 	if l.m == nil {
 		l.m = map[string]*sessionLock{}
 	}
-	sl := l.m[id]
+	sl := l.m[key]
 	if sl == nil {
 		sl = &sessionLock{ch: make(chan struct{}, 1)}
-		l.m[id] = sl
+		l.m[key] = sl
 	}
 	sl.refs++
 	l.mu.Unlock()
 	release := func() {
 		l.mu.Lock()
 		if sl.refs--; sl.refs == 0 {
-			delete(l.m, id)
+			delete(l.m, key)
 		}
 		l.mu.Unlock()
+	}
+	select {
+	case sl.ch <- struct{}{}: // free: no wait, no onWait
+		return func() { <-sl.ch; release() }, nil
+	default:
 	}
 	var timeout <-chan time.Time
 	if wait > 0 {
@@ -181,14 +214,22 @@ func (l *sessionLocks) acquire(ctx context.Context, id string, wait time.Duratio
 		defer t.Stop()
 		timeout = t.C
 	}
-	select {
-	case sl.ch <- struct{}{}:
-		return func() { <-sl.ch; release() }, nil
-	case <-ctx.Done():
-		release()
-		return func() {}, ctx.Err()
-	case <-timeout:
-		release()
-		return func() {}, errors.New("session busy: previous turn still finishing")
+	tick := time.NewTicker(lockWaitTick)
+	defer tick.Stop()
+	for {
+		if onWait != nil {
+			onWait()
+		}
+		select {
+		case sl.ch <- struct{}{}:
+			return func() { <-sl.ch; release() }, nil
+		case <-ctx.Done():
+			release()
+			return func() {}, ctx.Err()
+		case <-timeout:
+			release()
+			return func() {}, errors.New("session busy: previous turn still finishing")
+		case <-tick.C:
+		}
 	}
 }

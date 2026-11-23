@@ -208,6 +208,7 @@ func (t *natsChatTrigger) handleStreaming(msg *nats_service.NatsMessage, body ch
 	if err := sess.Start(context.Background(), natsstream.StartPayload{
 		SessionID: body.SessionID, WorkflowID: t.workflowID, RequestID: msg.MessageId,
 	}); err != nil {
+		sess.Abort() // release the cancel and tool-result subscriptions
 		return serverErr(errcode.StreamInitFailed, err.Error(), 500)
 	}
 

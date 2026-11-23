@@ -108,3 +108,22 @@ func TestSessionBuffersEarlyToolResult(t *testing.T) {
 	}
 	_ = sess.Complete(context.Background(), natsstream.CompletePayload{})
 }
+
+// Abort tears a session down without publishing: subscriptions are gone.
+func TestSessionAbortReleasesSubscriptions(t *testing.T) {
+	_, nc := runEmbedded(t)
+	m := &nats.Msg{Subject: "x", Reply: nc.NewInbox()}
+	sess, err := natsstream.NewStreamSession(nc, &nats_service.NatsMessage{OriginalMessage: m, MessageId: uuid.NewString()}, "test.base", newSilentLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := nc.NumSubscriptions()
+	sess.Abort()
+	if got := nc.NumSubscriptions(); got != before-2 {
+		t.Fatalf("subscriptions %d -> %d, want -2 (cancel + tool results)", before, got)
+	}
+	if !sess.IsCancelled() {
+		t.Fatal("Abort must cancel the session context")
+	}
+	sess.Abort() // idempotent
+}

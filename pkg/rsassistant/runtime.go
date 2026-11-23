@@ -201,7 +201,12 @@ func (p *published) handleChat(ctx context.Context, turn *agent.Turn, stream *ag
 		req.UI, req.Asker = p.ui, stream
 		// One consult per session: a resume waits for a parked turn's
 		// workflow drain to finish (bounded by the consult timeout).
-		unlock, lerr := p.sessions.acquire(ctx, turn.SessionID, p.cfg.ConsultTimeout)
+		unlock, lerr := p.sessions.acquire(ctx, sessionKey(turn.Identity, turn.SessionID),
+			lockWait(p.cfg.ConsultTimeout, turn.Budget), func() {
+				// keep RSAssistant's idle rule from cutting a waiting resume
+				stream.Status("waiting for the previous step to finish")
+				stream.Progress("wait", "previous step")
+			})
 		if lerr != nil {
 			if ctx.Err() != nil {
 				return nil // cancelled while waiting; the runtime ends the run

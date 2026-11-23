@@ -123,6 +123,19 @@ func (s *StreamSession) Fail(_ context.Context, p ErrorPayload) error {
 	return s.terminate(StreamEvent{Type: StreamError, Data: MustJSON(p)})
 }
 
+// Abort tears the session down without publishing anything (e.g. Start
+// failed): releases the cancel and tool-result subscriptions. Idempotent.
+func (s *StreamSession) Abort() {
+	if !s.closed.CompareAndSwap(false, true) {
+		return
+	}
+	if s.cancelSub != nil {
+		_ = s.cancelSub.Unsubscribe()
+	}
+	s.cancelFn()
+	s.toolResultHost.Stop()
+}
+
 func (s *StreamSession) terminate(evt StreamEvent) error {
 	if !s.closed.CompareAndSwap(false, true) {
 		return nil // idempotent
