@@ -308,21 +308,21 @@ func TestRelayToolCallEmitsProgress(t *testing.T) {
 // turn's drain); other sessions don't; the wait is bounded.
 func TestSessionLocks(t *testing.T) {
 	var l sessionLocks
-	unlock, err := l.acquire(context.Background(), "s1", time.Second, nil)
+	unlock, err := l.acquire(context.Background(), lockKey{session: "s1"}, time.Second, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if u, err := l.acquire(context.Background(), "s2", 50*time.Millisecond, nil); err != nil {
+	if u, err := l.acquire(context.Background(), lockKey{session: "s2"}, 50*time.Millisecond, nil); err != nil {
 		t.Fatalf("other session must not wait: %v", err)
 	} else {
 		u()
 	}
-	if _, err := l.acquire(context.Background(), "s1", 50*time.Millisecond, nil); err == nil {
+	if _, err := l.acquire(context.Background(), lockKey{session: "s1"}, 50*time.Millisecond, nil); err == nil {
 		t.Fatal("same session must wait and time out while held")
 	}
 	got := make(chan error, 1)
 	go func() {
-		u, err := l.acquire(context.Background(), "s1", 2*time.Second, nil)
+		u, err := l.acquire(context.Background(), lockKey{session: "s1"}, 2*time.Second, nil)
 		if err == nil {
 			u()
 		}
@@ -346,7 +346,7 @@ func TestSessionLocks(t *testing.T) {
 func TestSessionKeyScopedToIdentity(t *testing.T) {
 	alice := agent.Identity{AccountID: "acct-1", UserID: "u-alice", Verified: true}
 	mallory := agent.Identity{AccountID: "acct-2", UserID: "u-mallory", Verified: true}
-	if sessionKey(alice, "") != "" {
+	if sessionKey(alice, "") != (lockKey{}) {
 		t.Fatal("no session id: no lock")
 	}
 	if sessionKey(alice, "s1") == sessionKey(mallory, "s1") {
@@ -371,11 +371,11 @@ func TestSessionKeyScopedToIdentity(t *testing.T) {
 // While waiting, the caller is told the run is alive.
 func TestSessionLockWaitReportsProgress(t *testing.T) {
 	var l sessionLocks
-	unlock, _ := l.acquire(context.Background(), "k", time.Second, nil)
+	unlock, _ := l.acquire(context.Background(), lockKey{session: "k"}, time.Second, nil)
 	var waits int
 	var mu sync.Mutex
 	go func() { time.Sleep(80 * time.Millisecond); unlock() }()
-	u, err := l.acquire(context.Background(), "k", time.Second, func() { mu.Lock(); waits++; mu.Unlock() })
+	u, err := l.acquire(context.Background(), lockKey{session: "k"}, time.Second, func() { mu.Lock(); waits++; mu.Unlock() })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,7 +386,7 @@ func TestSessionLockWaitReportsProgress(t *testing.T) {
 		t.Fatal("onWait not called while waiting")
 	}
 	// No wait, no callback.
-	u2, _ := l.acquire(context.Background(), "k", time.Second, func() { t.Fatal("onWait on a free lock") })
+	u2, _ := l.acquire(context.Background(), lockKey{session: "k"}, time.Second, func() { t.Fatal("onWait on a free lock") })
 	u2()
 }
 
@@ -400,5 +400,30 @@ func TestLockWaitBudget(t *testing.T) {
 	}
 	if got := lockWait(30*time.Second, &wire.Budget{RemainingMs: 600000}); got != 30*time.Second {
 		t.Fatalf("budget larger than timeout = %s", got)
+	}
+}
+
+// Delimiters inside caller-controlled parts can't make two different
+// (identity, session) pairs share a lock.
+func TestSessionKeyNoCollisions(t *testing.T) {
+	pairs := [][2]lockKey{
+		{sessionKey(agent.Identity{AccountID: "a|b", UserID: "c"}, "s"), sessionKey(agent.Identity{AccountID: "a", UserID: "b|c"}, "s")},
+		{sessionKey(agent.Identity{AccountID: "a", UserID: "u"}, "x/s"), sessionKey(agent.Identity{AccountID: "a", UserID: "u/x"}, "s")},
+	}
+	for _, p := range pairs {
+		if p[0] == p[1] {
+			t.Fatalf("keys collide: %+v", p)
+		}
+		var l sessionLocks
+		unlock, err := l.acquire(context.Background(), p[0], time.Second, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if u, err := l.acquire(context.Background(), p[1], 50*time.Millisecond, nil); err != nil {
+			t.Fatalf("%+v blocked by %+v: %v", p[1], p[0], err)
+		} else {
+			u()
+		}
+		unlock()
 	}
 }

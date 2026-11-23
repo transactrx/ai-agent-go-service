@@ -143,7 +143,7 @@ func bridgeAskWait(engineWait time.Duration, lookup func(string) (string, bool))
 // sessionLocks serializes consults per key (see sessionKey).
 type sessionLocks struct {
 	mu sync.Mutex
-	m  map[string]*sessionLock
+	m  map[lockKey]*sessionLock
 }
 
 type sessionLock struct {
@@ -154,15 +154,21 @@ type sessionLock struct {
 // lockWaitTick is how often onWait runs while a consult waits for the lock.
 const lockWaitTick = 10 * time.Second
 
+// lockKey identifies one drain lock: the caller's identity plus the session
+// id, as separate fields so no delimiter inside a (caller-controlled) part
+// can make two different pairs collide. The zero key means "no lock".
+type lockKey struct{ account, user, session string }
+
 // sessionKey scopes the drain lock to the caller's identity (account and
 // user from the turn's identity: the verified one, or the turn's UserID when
 // unverified, as gate accepts it) plus the session id, so one caller can't
-// hold up another's consult by reusing its session id. "" = no lock.
-func sessionKey(id agent.Identity, sessionID string) string {
+// hold up another's consult by reusing its session id. No session id = the
+// zero key (no lock).
+func sessionKey(id agent.Identity, sessionID string) lockKey {
 	if sessionID == "" {
-		return ""
+		return lockKey{}
 	}
-	return id.AccountID + "|" + id.UserID + "/" + sessionID
+	return lockKey{account: id.AccountID, user: id.UserID, session: sessionID}
 }
 
 // lockWait bounds the wait for the lock: the consult timeout, and at most
@@ -180,14 +186,14 @@ func lockWait(consultTimeout time.Duration, b *wire.Budget) time.Duration {
 // acquire waits up to wait (or ctx) for key. While it waits, onWait (if set)
 // runs at once and then every lockWaitTick, so the caller can show the run
 // is alive. On timeout it returns an error and a no-op unlock: the caller
-// proceeds rather than hang. An empty key is never locked.
-func (l *sessionLocks) acquire(ctx context.Context, key string, wait time.Duration, onWait func()) (func(), error) {
-	if key == "" {
+// proceeds rather than hang. A key without a session id is never locked.
+func (l *sessionLocks) acquire(ctx context.Context, key lockKey, wait time.Duration, onWait func()) (func(), error) {
+	if key.session == "" {
 		return func() {}, nil
 	}
 	l.mu.Lock()
 	if l.m == nil {
-		l.m = map[string]*sessionLock{}
+		l.m = map[lockKey]*sessionLock{}
 	}
 	sl := l.m[key]
 	if sl == nil {
