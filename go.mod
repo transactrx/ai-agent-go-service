@@ -19,7 +19,7 @@ require (
 	github.com/nats-io/nats-server/v2 v2.14.3
 	github.com/nats-io/nats.go v1.53.1
 	github.com/pashagolub/pgxmock/v4 v4.9.0
-	github.com/transactrx/nats-agent v0.5.0
+	github.com/transactrx/nats-agent v0.8.0
 	github.com/transactrx/nats-service v1.4.46
 	github.com/transactrx/trx-gofiber-session v0.0.103
 	go.mongodb.org/mongo-driver/v2 v2.8.0
@@ -76,6 +76,3 @@ require (
 	golang.org/x/text v0.41.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 )
-
-// TEMP ask-user: local replace until nats-agent v0.8.0
-replace github.com/transactrx/nats-agent => ../../../../nats-agent/.claude/worktrees/ask-user

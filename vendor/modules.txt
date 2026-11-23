@@ -306,7 +306,7 @@ github.com/savsgio/gotils/strconv
 # github.com/tinylib/msgp v1.6.4
 ## explicit; go 1.24
 github.com/tinylib/msgp/msgp
-# github.com/transactrx/nats-agent v0.5.0 => ../../../../nats-agent/.claude/worktrees/ask-user
+# github.com/transactrx/nats-agent v0.8.0
 ## explicit; go 1.26.5
 github.com/transactrx/nats-agent/internal/progressclock
 github.com/transactrx/nats-agent/pkg/agent
@@ -452,4 +452,3 @@ golang.org/x/text/width
 # golang.org/x/time v0.15.0
 ## explicit; go 1.25.0
 golang.org/x/time/rate
-# github.com/transactrx/nats-agent => ../../../../nats-agent/.claude/worktrees/ask-user
