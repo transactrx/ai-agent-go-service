@@ -46,6 +46,13 @@ standard `request_user_input` tool (nats-agent protocol 1.7, `pkg/ask`). It is
 separate from PowerLine's web UI tools (`tool/ui-*`), which stay web-only
 (rule 3 above).
 
+**Before opting in, update the workflow's own prompt.** The library never
+rewrites a workflow's instructions. A prompt that forbids follow-up questions
+(e.g. "There is no UI … never wait for user input") makes the model refuse the
+offered tool. In the same change that sets `askUser: true`, allow it, e.g.:
+"If request_user_input is available, use it when the request is ambiguous;
+otherwise state the interpretation you chose and answer."
+
 - Card: `capabilities.userInput`, `progress` and `renew` (RSAssistant needs all
   three). Without `askUser` the card is exactly as before.
 - Per turn: only when the caller sent `userInput.supported` (RSAssistant web
