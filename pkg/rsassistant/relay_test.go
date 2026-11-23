@@ -21,7 +21,12 @@ type recorded struct {
 	any  any
 }
 
-type recorder struct{ evs []recorded }
+type recorder struct {
+	evs      []recorded
+	progress []string // stage/detail, kept apart so event-order assertions stay as they were
+}
+
+func (r *recorder) Progress(stage, detail string) { r.progress = append(r.progress, stage+"/"+detail) }
 
 func (r *recorder) Text(d string) { r.evs = append(r.evs, recorded{kind: "text", a: d}) }
 func (r *recorder) ToolUse(id, name string, in any) {

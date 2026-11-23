@@ -67,3 +67,51 @@ func TestToolResultSubjectIsStableForStream(t *testing.T) {
 		t.Fatalf("got %q want %q", got, want)
 	}
 }
+
+// A result published BEFORE WaitForToolResult (the client answered while the
+// model was still streaming) is buffered once the host listens, not lost.
+func TestWaitForToolResultReturnsEarlyPayload(t *testing.T) {
+	_, nc := runEmbedded(t)
+	host := natsstream.NewToolResultHost(nc, "test.base", "stream-early", newSilentLogger())
+	if err := host.Listen(); err != nil {
+		t.Fatal(err)
+	}
+	defer host.Stop()
+	if err := nc.Publish(host.SubjectFor("tc-1"), []byte(`{"_error":"can't ask the user here"}`)); err != nil {
+		t.Fatal(err)
+	}
+	// A second publish for the same call loses: first wins.
+	_ = nc.Publish(host.SubjectFor("tc-1"), []byte(`{"approved":true}`))
+	_ = nc.Flush()
+	time.Sleep(50 * time.Millisecond)
+	out, err := host.WaitForToolResult(context.Background(), "tc-1", 200*time.Millisecond)
+	if err != nil || string(out) != `{"_error":"can't ask the user here"}` {
+		t.Fatalf("out=%s err=%v", out, err)
+	}
+}
+
+// Listening keeps the live path: a result published while waiting arrives,
+// first wins, and Stop clears what is buffered.
+func TestListeningHostLiveAndStop(t *testing.T) {
+	_, nc := runEmbedded(t)
+	host := natsstream.NewToolResultHost(nc, "test.base", "stream-live", newSilentLogger())
+	if err := host.Listen(); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		_ = nc.Publish(host.SubjectFor("tc-2"), []byte(`{"value":"a"}`))
+		_ = nc.Publish(host.SubjectFor("tc-2"), []byte(`{"value":"b"}`))
+	}()
+	out, err := host.WaitForToolResult(context.Background(), "tc-2", 2*time.Second)
+	if err != nil || string(out) != `{"value":"a"}` {
+		t.Fatalf("out=%s err=%v", out, err)
+	}
+	_ = nc.Publish(host.SubjectFor("tc-3"), []byte(`{"x":1}`))
+	_ = nc.Flush()
+	time.Sleep(50 * time.Millisecond)
+	host.Stop()
+	if _, err := host.WaitForToolResult(context.Background(), "tc-3", 100*time.Millisecond); err == nil {
+		t.Fatal("Stop must clear buffered results")
+	}
+}

@@ -66,11 +66,17 @@ func NewStreamSession(nc *nats.Conn, msg *nats_service.NatsMessage, basePath str
 	s.cancelCtx, s.cancelFn = context.WithCancel(context.Background())
 	s.basePath = basePath
 	s.toolResultHost = NewToolResultHost(nc, basePath, streamID, logger)
+	// Listen before the start event announces the prefix: a client may answer
+	// a tool call before the agent loop starts waiting for it.
+	if err := s.toolResultHost.Listen(); err != nil {
+		return nil, fmt.Errorf("natsstream: %w", err)
+	}
 
 	sub, err := nc.Subscribe(cancelSubj, func(_ *nats.Msg) {
 		s.cancelFn()
 	})
 	if err != nil {
+		s.toolResultHost.Stop()
 		return nil, fmt.Errorf("natsstream: subscribe to cancel subject: %w", err)
 	}
 	s.cancelSub = sub
@@ -117,6 +123,19 @@ func (s *StreamSession) Fail(_ context.Context, p ErrorPayload) error {
 	return s.terminate(StreamEvent{Type: StreamError, Data: MustJSON(p)})
 }
 
+// Abort tears the session down without publishing anything (e.g. Start
+// failed): releases the cancel and tool-result subscriptions. Idempotent.
+func (s *StreamSession) Abort() {
+	if !s.closed.CompareAndSwap(false, true) {
+		return
+	}
+	if s.cancelSub != nil {
+		_ = s.cancelSub.Unsubscribe()
+	}
+	s.cancelFn()
+	s.toolResultHost.Stop()
+}
+
 func (s *StreamSession) terminate(evt StreamEvent) error {
 	if !s.closed.CompareAndSwap(false, true) {
 		return nil // idempotent
@@ -125,7 +144,9 @@ func (s *StreamSession) terminate(evt StreamEvent) error {
 		_ = s.cancelSub.Unsubscribe()
 	}
 	s.cancelFn()
-	return s.publish(evt, true)
+	err := s.publish(evt, true) // sequence-0 headers still read the prefix
+	s.toolResultHost.Stop()
+	return err
 }
 
 func (s *StreamSession) publish(evt StreamEvent, _ bool) error {

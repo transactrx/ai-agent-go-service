@@ -40,15 +40,15 @@ type fakeAgent struct {
 	processed sync.WaitGroup
 }
 
-func (fakeAgent) Spec() node.NodeSpec {
+func (*fakeAgent) Spec() node.NodeSpec {
 	return node.NodeSpec{
 		Type: "test/agent", Role: node.RoleAgent,
 		InputPorts:  []node.PortSpec{{Name: "main", Direction: node.PortIn, Cardinality: node.CardOne, Required: true}},
 		OutputPorts: []node.PortSpec{{Name: "main", Direction: node.PortOut, Cardinality: node.CardOne}},
 	}
 }
-func (fakeAgent) Init(_ context.Context, _ node.NodeEnv) error { return nil }
-func (fakeAgent) Close(_ context.Context) error                { return nil }
+func (*fakeAgent) Init(_ context.Context, _ node.NodeEnv) error { return nil }
+func (*fakeAgent) Close(_ context.Context) error                { return nil }
 func (a *fakeAgent) Process(_ context.Context, _ node.AgentInput, sink node.StreamSink) error {
 	defer a.processed.Done()
 	if sink == nil {

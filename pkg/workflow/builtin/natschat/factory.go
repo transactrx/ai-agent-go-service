@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	nats_service "github.com/transactrx/nats-service/pkg/nats-service"
@@ -102,6 +103,8 @@ type natsChatTrigger struct {
 	mu     sync.Mutex
 	sink   node.TriggerSink
 	access node.IndexAccess // set by the engine before Subscribe; zero value = none
+
+	askUserEnabled atomic.Bool // EnableAskUser (rsassistant.askUser workflows only)
 }
 
 var _ node.IndexAccessAware = (*natsChatTrigger)(nil)
@@ -122,6 +125,10 @@ type chatRequestBody struct {
 	Message      string `json:"message"`
 	SessionID    string `json:"sessionId,omitempty"`
 	ResponseMode string `json:"responseMode,omitempty"`
+	// AskUser offers request_user_input to the run (streaming only). Never
+	// decoded from JSON: handle sets it from askUserFlag on endpoints enabled
+	// by EnableAskUser (see streamRunContext). Not in the endpoint docs.
+	AskUser bool `json:"-"`
 }
 
 // ChatEndpoint is the read-only view of a trigger/nats-chat node used by

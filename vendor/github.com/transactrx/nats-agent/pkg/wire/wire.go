@@ -8,7 +8,7 @@ package wire
 import "encoding/json"
 
 // ProtocolVersion is the version of the agent protocol this library speaks.
-const ProtocolVersion = "1.4"
+const ProtocolVersion = "1.7"
 
 // Subject layout. Agents own <AgentPrefix>.<name>.>, tools own
 // <ToolPrefix>.<name>.>.
@@ -127,6 +127,16 @@ type Capabilities struct {
 	// UserContext (v1.3): the agent reads ChatRequest.context (user's time
 	// zone and name) and answers in the user's local time.
 	UserContext bool `json:"userContext,omitempty"`
+	// Progress (v1.5): the agent emits progress data events and honors
+	// ChatRequest.budget, so callers may cut a turn on progress idleness.
+	Progress bool `json:"progress,omitempty"`
+	// Renew (v1.5): the agent accepts a fresh IDT mid-run on the ack's
+	// caps.renewSubject.
+	Renew bool `json:"renew,omitempty"`
+	// UserInput (v1.7): the agent can ask the user for input mid-turn and
+	// accepts answers on the ack's caps.inputSubject. Used only when the
+	// request also sets userInput.supported.
+	UserInput bool `json:"userInput,omitempty"`
 }
 
 // AgentAccess maps an agent onto the identity model: an agent IS an
@@ -161,6 +171,51 @@ type ChatRequest struct {
 	// Context (v1.3) is display-only user context (time zone, name, locale).
 	// Never authorization. Agents read it normalized (see UserContext).
 	Context *UserContext `json:"context,omitempty"`
+	// Budget (v1.5) is the time the caller still allows this turn. Absent =
+	// the agent's own limits apply.
+	Budget *Budget `json:"budget,omitempty"`
+	// Delegation (v1.6) is how many agent-to-agent hops precede this turn.
+	// Absent = 0 (a top-level turn).
+	Delegation *Delegation `json:"delegation,omitempty"`
+	// UserInput (v1.7) says whether the caller can show the user an ask card.
+	// Absent = the agent must not ask.
+	UserInput *UserInputSupport `json:"userInput,omitempty"`
+	// Inputs (v1.7) carries answers to asks that were parked (the live wait
+	// expired); the agent resumes them before the model runs.
+	Inputs []AskInput `json:"inputs,omitempty"`
+}
+
+// UserInputSupport (v1.7) is the caller's declaration that it can render asks.
+type UserInputSupport struct {
+	Supported bool `json:"supported"`
+}
+
+// AskInput (v1.7) is the user's answer to one ask, delivered with a chat
+// request. Ask is the original ask payload (opaque to the wire), included so
+// the agent can validate and replay a parked ask.
+type AskInput struct {
+	AskID  string          `json:"askId"`
+	Action string          `json:"action"` // InputActionSubmit or InputActionSkip
+	Values map[string]any  `json:"values,omitempty"`
+	Ask    json.RawMessage `json:"ask,omitempty"`
+}
+
+// Delegation (v1.6) carries the agent-to-agent hop depth of a request.
+type Delegation struct {
+	Depth int `json:"depth"`
+}
+
+// Budget (v1.5) carries the caller's remaining time for a turn.
+type Budget struct {
+	RemainingMs int64 `json:"remainingMs"`
+}
+
+// AckCaps (v1.5) tells the caller what this run of the agent supports.
+type AckCaps struct {
+	Progress     bool   `json:"progress,omitempty"`
+	RenewSubject string `json:"renewSubject,omitempty"` // where RenewRequest goes
+	// InputSubject (v1.7) is where InputRequest goes to answer a live ask.
+	InputSubject string `json:"inputSubject,omitempty"`
 }
 
 type ChatAck struct {
@@ -170,6 +225,8 @@ type ChatAck struct {
 	Agent         string `json:"agent"`
 	InstanceID    string `json:"instanceId"`
 	StreamSubject string `json:"streamSubject"`
+	// Caps (v1.5) is absent on older agents.
+	Caps *AckCaps `json:"caps,omitempty"`
 }
 
 // Event types published to the stream subject.
@@ -192,6 +249,118 @@ const (
 	StopCancelled     = "cancelled"
 	StopMaxIterations = "maxIterations"
 )
+
+// Cut reasons (v1.5) carried by AgentEvent.Reason on done/error events when a
+// turn was ended by a limit rather than by the model.
+const (
+	ReasonTimeCap         = "time_cap"
+	ReasonProgressIdle    = "progress_idle"
+	ReasonInterrupted     = "interrupted"
+	ReasonMaxIterations   = "max_iterations"
+	ReasonSubagentTimeout = "subagent_timeout"
+	ReasonSubagentIdle    = "subagent_idle"
+	ReasonTokenRotation   = "token_rotation_failed"
+	// ReasonUnavailable: an operational stop, a service the turn needs was
+	// unavailable.
+	ReasonUnavailable = "unavailable"
+	// ReasonAwaitingInput (v1.7): the turn ended because the user did not
+	// answer an ask within the live wait; the ask is parked.
+	ReasonAwaitingInput = "awaiting_input"
+)
+
+// Data event kinds for user input (v1.7).
+const (
+	// DataKindAsk is a data event whose payload is the ask the user must answer.
+	DataKindAsk = "ask"
+	// DataKindAskClosed is a data event telling the caller an ask is no longer
+	// open (answered, skipped, parked or superseded).
+	DataKindAskClosed = "askClosed"
+)
+
+// AskEvent (v1.7) is the payload of a data event of kind DataKindAsk. Ask is
+// the ask itself (pkg/ask.Ask), opaque to the wire.
+type AskEvent struct {
+	AskID  string          `json:"askId"`
+	WaitMs int64           `json:"waitMs"`
+	Origin string          `json:"origin"`
+	Ask    json.RawMessage `json:"ask"`
+}
+
+// AskClosedEvent (v1.7) is the payload of a data event of kind
+// DataKindAskClosed. Status is one of the AskClosed* values.
+type AskClosedEvent struct {
+	AskID  string `json:"askId"`
+	Status string `json:"status"`
+}
+
+// askClosed statuses (v1.7).
+const (
+	AskClosedAnswered   = "answered"
+	AskClosedSkipped    = "skipped"
+	AskClosedParked     = "parked"
+	AskClosedSuperseded = "superseded"
+)
+
+// Input actions (v1.7).
+const (
+	InputActionSubmit = "submit"
+	InputActionSkip   = "skip"
+	// InputActionSupersede: the user sent a message instead of answering;
+	// Values["text"] (non-empty string) carries it. The ask closes as
+	// superseded, like Stream.InterruptAsk.
+	InputActionSupersede = "supersede"
+)
+
+// Input rejection reasons (v1.7) carried by InputResponse.Reason.
+const (
+	InputReasonUnknownAsk = "unknown_ask"
+	InputReasonClosed     = "closed"
+	InputReasonInvalid    = "invalid"
+	// InputReasonBusy is reserved: the v0.8 runtime never sends it. Answers
+	// to one ask are decided one at a time, so the loser of concurrent
+	// answers gets InputReasonClosed; one open ask per run is enforced by
+	// Stream.AskUser returning ErrBusy.
+	InputReasonBusy = "busy"
+)
+
+// InputRequest (v1.7) answers a live ask of a running turn.
+type InputRequest struct {
+	RunID  string         `json:"runId"`
+	AskID  string         `json:"askId"`
+	Action string         `json:"action"` // InputActionSubmit, InputActionSkip or InputActionSupersede
+	Values map[string]any `json:"values,omitempty"`
+}
+
+// InputResponse (v1.7) says whether the answer was accepted. Errors maps field
+// ids to messages when Reason is InputReasonInvalid.
+type InputResponse struct {
+	Accepted bool              `json:"accepted"`
+	Reason   string            `json:"reason,omitempty"`
+	Errors   map[string]string `json:"errors,omitempty"`
+}
+
+// DataKindProgress (v1.5) is the data event kind whose payload is a
+// ProgressPayload.
+const DataKindProgress = "progress"
+
+// ProgressPayload (v1.5) is the payload of a data event of kind "progress".
+type ProgressPayload struct {
+	Stage  string `json:"stage"`
+	Source string `json:"source,omitempty"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// RenewRequest (v1.5) hands a running turn a fresh IDT.
+type RenewRequest struct {
+	RunID       string `json:"runId"`
+	IDT         string `json:"idt"`
+	ExpiresAtMs int64  `json:"expiresAtMs,omitempty"` // expiry of the new token, unix ms
+}
+
+type RenewResponse struct {
+	Applied bool   `json:"applied"`
+	Reason  string `json:"reason,omitempty"`
+}
 
 type AgentEvent struct {
 	RunID string `json:"runId"`
@@ -217,6 +386,14 @@ type AgentEvent struct {
 
 	Error       string `json:"error,omitempty"`       // error
 	ErrorStatus int    `json:"errorStatus,omitempty"` // error, §9 code
+
+	Reason string `json:"reason,omitempty"` // done, error (v1.5 cut reason)
+}
+
+// IsProgress reports whether this event shows the run is making progress.
+// Every event counts except pings, which only prove liveness.
+func (e *AgentEvent) IsProgress() bool {
+	return e.Type != EventPing
 }
 
 // IsTerminal reports whether this event ends the run.
@@ -226,6 +403,11 @@ func (e *AgentEvent) IsTerminal() bool {
 
 type CancelRequest struct {
 	RunID string `json:"runId"`
+	// Reason (v1.5, optional) marks the cancel as a cut by the caller's
+	// limits (ReasonProgressIdle, ReasonTokenRotation, ReasonInterrupted,
+	// ReasonTimeCap, ReasonUnavailable). Empty or unknown = a plain (user)
+	// cancel.
+	Reason string `json:"reason,omitempty"`
 }
 
 type CancelResponse struct {
@@ -257,6 +439,10 @@ type StoredMessage struct {
 	Role      string         `json:"role"`
 	Content   []ContentBlock `json:"content"`
 	Timestamp string         `json:"timestamp,omitempty"` // RFC 3339
+	// Incomplete (v1.5) is empty for a complete message; otherwise the
+	// reason the message was cut short (a Reason* value, e.g. time_cap,
+	// interrupted, or "error"). Optional; older peers ignore it.
+	Incomplete string `json:"incomplete,omitempty"`
 }
 
 type SessionsListRequest struct {
@@ -341,6 +527,8 @@ type ToolRunRequest struct {
 	SessionID string         `json:"sessionId,omitempty"`
 	Agent     string         `json:"agent,omitempty"`
 	Metadata  map[string]any `json:"metadata,omitempty"`
+	// Delegation (v1.6) is the hop depth of the turn that issued this call.
+	Delegation *Delegation `json:"delegation,omitempty"`
 }
 
 // Tool run statuses. Execution errors are model-visible data ("error"
@@ -361,14 +549,15 @@ type ToolRunResponse struct {
 // ─── Error detail codes (§9) ──────────────────────────────────────────────
 
 const (
-	CodeInvalidBody    = 4001
-	CodeMissingField   = 4002
-	CodeForbidden      = 4031
-	CodeUnknownSession = 4041
-	CodeUnknownRun     = 4042
-	CodeBusy           = 4291
-	CodeUpstream       = 5001
-	CodeInternal       = 5002
+	CodeInvalidBody     = 4001
+	CodeMissingField    = 4002
+	CodeDelegationDepth = 4003
+	CodeForbidden       = 4031
+	CodeUnknownSession  = 4041
+	CodeUnknownRun      = 4042
+	CodeBusy            = 4291
+	CodeUpstream        = 5001
+	CodeInternal        = 5002
 )
 
 // MatchesFilter reports whether an agent card matches a discovery filter.

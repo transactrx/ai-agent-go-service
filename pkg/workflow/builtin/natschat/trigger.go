@@ -174,6 +174,12 @@ func (t *natsChatTrigger) handle(msg *nats_service.NatsMessage) *nats_service.Na
 	if body.SessionID == "" {
 		body.SessionID = uuid.NewString()
 	}
+	if t.askUserEnabled.Load() {
+		body.AskUser = askUserFlag(msg.Body)
+	} else {
+		// Not an askUser endpoint: keep the flag out of the body.
+		msg.Body = stripAskUser(msg.Body)
+	}
 
 	id := identity.Identity{
 		NatsUserID: msg.Header.Get(t.cfg.IdentitySource.NatsUserHeader),
@@ -208,6 +214,7 @@ func (t *natsChatTrigger) handleStreaming(msg *nats_service.NatsMessage, body ch
 	if err := sess.Start(context.Background(), natsstream.StartPayload{
 		SessionID: body.SessionID, WorkflowID: t.workflowID, RequestID: msg.MessageId,
 	}); err != nil {
+		sess.Abort() // release the cancel and tool-result subscriptions
 		return serverErr(errcode.StreamInitFailed, err.Error(), 500)
 	}
 
@@ -221,10 +228,12 @@ func (t *natsChatTrigger) handleStreaming(msg *nats_service.NatsMessage, body ch
 		Done:       sess.Context().Done(),
 	}
 
+	t.logAskUser(msg.MessageId, body)
 	go func() {
 		ctx, cancel := context.WithTimeout(sess.Context(), t.requestTimeout)
 		defer cancel()
 		ctx = engine.WithToolResultHost(ctx, sess.ToolResultHost())
+		ctx = streamRunContext(ctx, body, t.askUserEnabled.Load())
 		if emitErr := sink.Emit(ctx, evt); emitErr != nil {
 			_ = sess.Fail(context.Background(), natsstream.ErrorPayload{
 				Code: errcode.ExecutorFailed, Message: emitErr.Error(),
